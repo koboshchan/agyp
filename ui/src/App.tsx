@@ -16,6 +16,7 @@ import {DataGridTable} from '@/components/reui/data-grid/data-grid-table';
 import {DataGridPagination} from '@/components/reui/data-grid/data-grid-pagination';
 
 type Any=any;
+const pct=new Intl.NumberFormat('en',{style:'percent',maximumFractionDigits:0});
 const compact=new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1});
 const num=(n:unknown)=>compact.format(Number(n)||0);
 const full=(n:unknown)=>new Intl.NumberFormat('en').format(Number(n)||0);
@@ -199,9 +200,9 @@ export default function App(){
      <div id="accounts" className="grid gap-4 md:grid-cols-2">
       {!accounts.length&&<p className="col-span-full py-16 text-center text-sm text-muted-foreground">No connected accounts yet. Connect Google to get started.</p>}
       {accounts.map(a=>{const act2=Object.entries(active).filter(([,id])=>id===a.id).map(([f])=>f);const paused=a.status==='disabled';const nm=a.email||a.id;
-       return <Card key={a.id} className="rounded-2xl"><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="break-all text-base">{nm}</CardTitle><Badge variant={a.blocked?'destructive-light':paused?'secondary':'success-light'}>{a.blocked?'Blocked':paused?'Paused':'Ready'}</Badge></div></CardHeader>
-       <CardContent><div className="divide-y"><Row k="Sharing" v={paused?'Paused':'Enabled'}/>{a.shared&&<Row k="Shared account" v="Yes"/>}{act2.length>0&&<Row k="Active for" v={act2.join(', ')}/>}
-        {(a.buckets||[]).map((b:Any,i:number)=><Row key={i} k={(b.label||b.family)+' · resets '+when(b.reset)} v={typeof b.remaining==='number'?full(b.remaining)+' left':String(b.remaining??'Unknown')}/>)}
+       return <Card key={a.id} className="rounded-2xl"><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="break-all text-base">{nm}</CardTitle><Badge variant={a.blocked||(!paused&&a.status!=='ready')?'destructive-light':paused?'secondary':'success-light'}>{a.blocked?'Blocked':paused?'Paused':a.status==='ready'?'Ready':a.status==='auth_error'?'Auth error':String(a.status||'Unknown').replace(/_/g,' ').replace(/^./,(c:string)=>c.toUpperCase())}</Badge></div></CardHeader>
+       <CardContent><div className="divide-y"><Row k="Sharing" v={paused?'Paused':'Enabled'}/>{a.shared&&<Row k="Shared Gemini pool" v="Yes"/>}{act2.length>0&&<Row k="Active for" v={act2.join(', ')}/>}
+        {(a.buckets||[]).map((b:Any,i:number)=><Row key={i} k={(b.label||b.family)+' · resets '+when(b.reset)} v={b.disabled?'Disabled':typeof b.remaining==='number'?pct.format(b.remaining)+' remaining':'Unknown'}/>)}
         {!(a.buckets||[]).length&&<Row k="Quota" v="Not available yet"/>}<Row k="Updated" v={when(a.updated)}/>
         {a.cooldowns&&Object.keys(a.cooldowns).length>0&&<Row k="Cooldowns" v={JSON.stringify(a.cooldowns)}/>}{a.denied&&Object.keys(a.denied).length>0&&<Row k="Unavailable" v={JSON.stringify(a.denied)}/>}</div>
         <div className="mt-4 flex flex-wrap gap-2">
