@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -51,7 +52,7 @@ func restoreTerminal() func() {
 // Never enumerate or kill processes by name. The job handle is noninheritable.
 var childJob windows.Handle
 
-func prepareChild(_ *exec.Cmd) (func(), error) {
+func prepareChild(cmd *exec.Cmd) (func(), error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
@@ -62,6 +63,7 @@ func prepareChild(_ *exec.Cmd) (func(), error) {
 		windows.CloseHandle(job)
 		return nil, err
 	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
 	childJob = job
 	return func() { windows.CloseHandle(job) }, nil
 }
@@ -71,5 +73,34 @@ func containChild(cmd *exec.Cmd) error {
 		return err
 	}
 	defer windows.CloseHandle(h)
-	return windows.AssignProcessToJobObject(childJob, h)
+	if err := windows.AssignProcessToJobObject(childJob, h); err != nil {
+		return err
+	}
+	// The child has not executed any code, so it has exactly its primary thread.
+	// Associate it with the job before resuming to close the descendant escape race.
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
+		if entry.OwnerProcessID != uint32(cmd.Process.Pid) {
+			continue
+		}
+		thread, e := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+		if e != nil {
+			return e
+		}
+		count, e := windows.ResumeThread(thread)
+		windows.CloseHandle(thread)
+		if e != nil {
+			return e
+		}
+		if count != 1 {
+			return errors.New("unexpected child suspension state")
+		}
+		return nil
+	}
+	return errors.New("suspended child primary thread missing")
 }
