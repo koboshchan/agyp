@@ -5,7 +5,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -129,8 +132,9 @@ func (a *auth) session(ctx context.Context, rejected string) (string, error) {
 }
 
 type shim struct {
-	auth *auth
-	http *http.Client
+	auth       *auth
+	http       *http.Client
+	capability string
 }
 
 var hop = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade"}
@@ -145,15 +149,51 @@ func clean(h http.Header) {
 		h.Del(n)
 	}
 }
+
+var inferencePath = regexp.MustCompile(`^/v1internal:(generateContent|streamGenerateContent|countTokens|fetchAvailableModels)$`)
+var modelActionPath = regexp.MustCompile(`^/v1(beta)?/models/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens)$`)
+
+func inferenceAllowed(method, path string) bool {
+	return method == "POST" && (inferencePath.MatchString(path) || modelActionPath.MatchString(path)) ||
+		method == "GET" && (path == "/v1/models" || path == "/v1beta/models")
+}
+func (s *shim) proxyAuthorized(r *http.Request) bool {
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("agyp:"+s.capability))
+	return s.capability != "" && subtle.ConstantTimeCompare([]byte(r.Header.Get("Proxy-Authorization")), []byte(expected)) == 1
+}
 func (s *shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "CONNECT" {
-		s.connect(w, r)
-		return
+	if r.Method == "CONNECT" || r.URL.IsAbs() {
+		if !s.proxyAuthorized(r) {
+			w.Header().Set("Proxy-Authenticate", `Basic realm="agyp"`)
+			http.Error(w, "proxy authentication required", 407)
+			return
+		}
+		if r.Method == "CONNECT" {
+			s.connect(w, r)
+			return
+		}
+		if r.URL.Scheme != "http" || r.URL.User != nil {
+			http.Error(w, "invalid proxy target", 400)
+			return
+		}
+		// Only exact Cloud Code hosts may exchange the remote inference credential.
+		if r.URL.Hostname() != "cloudcode-pa.googleapis.com" && r.URL.Hostname() != "daily-cloudcode-pa.googleapis.com" {
+			s.forward(w, r, r.URL, nil)
+			return
+		}
+	} else {
+		prefix := "/" + s.capability
+		if s.capability == "" || !strings.HasPrefix(r.URL.Path, prefix+"/") || r.URL.RawPath != "" {
+			http.Error(w, "local capability required", 403)
+			return
+		}
+		r = r.Clone(r.Context())
+		u := *r.URL
+		u.Path = strings.TrimPrefix(u.Path, prefix)
+		r.URL = &u
 	}
-	// Absolute-form requests to unrelated HTTP services must remain direct.
-	cloud := !r.URL.IsAbs() || r.URL.Host == r.Host && (r.URL.Hostname() == "127.0.0.1" || r.URL.Hostname() == "localhost" || strings.HasSuffix(r.URL.Hostname(), "cloudcode-pa.googleapis.com"))
-	if !cloud {
-		s.forward(w, r, r.URL, nil)
+	if r.URL.RawPath != "" || !inferenceAllowed(r.Method, r.URL.Path) {
+		http.Error(w, "inference endpoint forbidden", 403)
 		return
 	}
 	u := *s.auth.base
@@ -195,6 +235,9 @@ func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *au
 		q.RequestURI = ""
 		q.Header = r.Header.Clone()
 		clean(q.Header)
+		q.Header.Del("Authorization")
+		q.Header.Del("X-Goog-Api-Key")
+		q.Header.Del("Cookie")
 		if body != nil {
 			body.Seek(0, 0)
 			q.Body = io.NopCloser(body)
@@ -290,7 +333,7 @@ func (s *shim) connect(w http.ResponseWriter, r *http.Request) {
 	up.Close()
 	<-done
 }
-func childEnv(env []string, addr string) []string {
+func childEnv(env []string, addr, capability string) []string {
 	out := []string{}
 	for _, v := range env {
 		k, _, _ := strings.Cut(v, "=")
@@ -300,7 +343,10 @@ func childEnv(env []string, addr string) []string {
 		}
 		out = append(out, v)
 	}
-	return append(out, "CLOUD_CODE_URL="+addr, "HTTP_PROXY="+addr, "HTTPS_PROXY="+addr, "http_proxy="+addr, "https_proxy="+addr, "NO_PROXY=localhost,127.0.0.1,::1,speech.googleapis.com", "no_proxy=localhost,127.0.0.1,::1,speech.googleapis.com")
+	proxyURL, _ := url.Parse(addr)
+	proxyURL.User = url.UserPassword("agyp", capability)
+	proxy := proxyURL.String()
+	return append(out, "CLOUD_CODE_URL="+addr+"/"+capability, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, "NO_PROXY=localhost,127.0.0.1,::1,speech.googleapis.com", "no_proxy=localhost,127.0.0.1,::1,speech.googleapis.com")
 }
 func run(args []string) int {
 	if len(args) > 0 && args[0] == "--" {
@@ -333,11 +379,18 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, "cannot start local proxy")
 		return 1
 	}
-	srv := &http.Server{Handler: &shim{a, client()}, ReadHeaderTimeout: 15 * time.Second}
+	capBytes := make([]byte, 32)
+	if _, e = rand.Read(capBytes); e != nil {
+		ln.Close()
+		fmt.Fprintln(os.Stderr, "cannot generate local capability")
+		return 1
+	}
+	capability := base64.RawURLEncoding.EncodeToString(capBytes)
+	srv := &http.Server{Handler: &shim{a, client(), capability}, ReadHeaderTimeout: 15 * time.Second}
 	go srv.Serve(ln)
 	defer srv.Close()
 	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Env = childEnv(os.Environ(), "http://"+ln.Addr().String())
+	cmd.Env = childEnv(os.Environ(), "http://"+ln.Addr().String(), capability)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
