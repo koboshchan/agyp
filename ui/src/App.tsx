@@ -51,11 +51,11 @@ export default function App(){
  const [confirm,setConfirm]=useState<{title:string;body:string;label:string;run:()=>Promise<void>}|null>(null);
  const tokenRef=useRef<HTMLInputElement>(null),secretRef=useRef<HTMLTextAreaElement>(null),oauthRef=useRef<HTMLInputElement>(null);
  const sessionTimer=useRef<number|undefined>(undefined),noteTimer=useRef<number|undefined>(undefined);
- const meRef=useRef<Any>(null);meRef.current=me;
+ const gen=useRef(0);const meRef=useRef<Any>(null);meRef.current=me;
 
  const notify=useCallback((text:string,error=false)=>{setNote({text,error});clearTimeout(noteTimer.current);noteTimer.current=window.setTimeout(()=>setNote(null),error?9000:5000);},[]);
  const lock=useCallback((message?:string)=>{
-  clearTimeout(sessionTimer.current);setCsrf(undefined);meRef.current=null;
+  gen.current++;clearTimeout(sessionTimer.current);setCsrf(undefined);meRef.current=null;
   setMe(null);setStats({});setKeys([]);setAccounts([]);setActive({});setKeyOpen(false);setSecretOpen(false);setOauthOpen(false);setConfirm(null);
   if(tokenRef.current)tokenRef.current.value='';if(secretRef.current)secretRef.current.value='';if(oauthRef.current)oauthRef.current.value='';
   if(message)notify(message,true);
@@ -67,13 +67,13 @@ export default function App(){
  },[]);
 
  const load=useCallback(async()=>{
-  setLoading(true);
+  setLoading(true);const g=gen.current;
   try{
-   const m=await api('/api/me');setCsrf(m.csrf);meRef.current=m;setMe(m);
+   const m=await api('/api/me');if(g!==gen.current)return;setCsrf(m.csrf);meRef.current=m;setMe(m);
    clearTimeout(sessionTimer.current);const exp=Number(m.sessionExpires);
    if(Number.isFinite(exp)&&exp>0){if(exp<=Date.now()){lock(lockMsg);return;}sessionTimer.current=window.setTimeout(()=>lock(lockMsg),Math.min(exp-Date.now(),2147483647));}
    const reqs:Promise<Any>[]=[api('/api/stats')];if(m.key.admin)reqs.push(api('/api/keys'),api('/api/accounts'));
-   const r=await Promise.allSettled(reqs);if(!meRef.current)return;
+   const r=await Promise.allSettled(reqs);if(g!==gen.current||!meRef.current)return;
    setStats(r[0].status==='fulfilled'?r[0].value:{});
    if(m.key.admin){setKeys(r[1].status==='fulfilled'?r[1].value.keys||[]:[]);const a=r[2].status==='fulfilled'?r[2].value:null;setAccounts(a?.accounts||[]);setActive(a?.active||{});}
    else setView('overview');
@@ -138,7 +138,7 @@ export default function App(){
  const nav:[View,string,ReactNode][]=[['overview','Overview',<Activity key="a" className="size-4"/>],['accounts','Accounts',<Server key="b" className="size-4"/>],['keys','Access keys',<KeyRound key="c" className="size-4"/>]];
 
  return <>
-  {!me&&<section id="login" className="grid min-h-dvh place-items-center px-5 py-10">
+  <section id="login" hidden={!!me} className="min-h-dvh place-items-center px-5 py-10 [&:not([hidden])]:grid">
    <div className="w-full max-w-sm">
     <div className="mx-auto mb-8 grid size-14 place-items-center rounded-2xl bg-foreground text-2xl font-semibold text-background" aria-hidden="true">a</div>
     <h1 className="text-center text-3xl">Sign in to agyp</h1>
@@ -146,11 +146,11 @@ export default function App(){
     <form id="login-form" onSubmit={onLogin} className="mt-8 space-y-3 rounded-2xl bg-card p-5 shadow-sm ring-1 ring-border">
      <Label htmlFor="token">Access key</Label>
      <Input id="token" ref={tokenRef} type="password" placeholder="agyp_…" autoComplete="off" spellCheck={false} required className="h-11 rounded-xl text-base"/>
-     <Button type="submit" disabled={busy||loading&&false} className="h-11 w-full rounded-xl text-base">Continue</Button>
+     <Button type="submit" disabled={busy} className="h-11 w-full rounded-xl text-base">Continue</Button>
     </form>
     <p className="mt-4 text-center text-xs text-muted-foreground">Your key stays in this tab. Only a signed challenge is sent. Sessions last 15 minutes.</p>
    </div>
-  </section>}
+  </section>
 
   {me&&<div id="dashboard" className="min-h-dvh">
    <header className="glass sticky top-0 z-30 border-b">
@@ -198,15 +198,15 @@ export default function App(){
      <div className="flex items-center justify-between gap-3"><p className="text-muted-foreground">Connected accounts and their capacity.</p><Button id="add-account" onClick={addAccount} disabled={busy} className="rounded-full"><Plus className="size-4"/>Connect Google</Button></div>
      <div id="accounts" className="grid gap-4 md:grid-cols-2">
       {!accounts.length&&<p className="col-span-full py-16 text-center text-sm text-muted-foreground">No connected accounts yet. Connect Google to get started.</p>}
-      {accounts.map(a=>{const act2=Object.entries(active).filter(([,id])=>id===a.id).map(([f])=>f);const nm=a.email||a.id;
-       return <Card key={a.id} className="rounded-2xl"><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="break-all text-base">{nm}</CardTitle><Badge variant={a.blocked?'destructive-light':a.status==='disabled'?'secondary':'success-light'}>{a.status||(a.blocked?'Blocked':'Connected')}</Badge></div></CardHeader>
-       <CardContent><div className="divide-y"><Row k="Sharing" v={a.shared?'Enabled':'Paused'}/>{act2.length>0&&<Row k="Active for" v={act2.join(', ')}/>}
+      {accounts.map(a=>{const act2=Object.entries(active).filter(([,id])=>id===a.id).map(([f])=>f);const paused=a.status==='disabled';const nm=a.email||a.id;
+       return <Card key={a.id} className="rounded-2xl"><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="break-all text-base">{nm}</CardTitle><Badge variant={a.blocked?'destructive-light':paused?'secondary':'success-light'}>{a.blocked?'Blocked':paused?'Paused':'Ready'}</Badge></div></CardHeader>
+       <CardContent><div className="divide-y"><Row k="Sharing" v={paused?'Paused':'Enabled'}/>{a.shared&&<Row k="Shared account" v="Yes"/>}{act2.length>0&&<Row k="Active for" v={act2.join(', ')}/>}
         {(a.buckets||[]).map((b:Any,i:number)=><Row key={i} k={(b.label||b.family)+' · resets '+when(b.reset)} v={typeof b.remaining==='number'?full(b.remaining)+' left':String(b.remaining??'Unknown')}/>)}
         {!(a.buckets||[]).length&&<Row k="Quota" v="Not available yet"/>}<Row k="Updated" v={when(a.updated)}/>
         {a.cooldowns&&Object.keys(a.cooldowns).length>0&&<Row k="Cooldowns" v={JSON.stringify(a.cooldowns)}/>}{a.denied&&Object.keys(a.denied).length>0&&<Row k="Unavailable" v={JSON.stringify(a.denied)}/>}</div>
         <div className="mt-4 flex flex-wrap gap-2">
          <Button variant="secondary" size="sm" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/refresh',{method:'POST',body:{}});await load();})}>Refresh quotas</Button>
-         <Button variant="secondary" size="sm" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/toggle',{method:'POST',body:{}});await load();})}>{a.shared?'Pause sharing':'Enable sharing'}</Button>
+         <Button variant="secondary" size="sm" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/toggle',{method:'POST',body:{}});await load();})}>{paused?'Enable sharing':'Pause sharing'}</Button>
          <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={()=>ask('Remove '+nm+'?','It will be removed from the proxy.','Remove',async()=>{await api('/api/accounts/'+encodeURIComponent(a.id),{method:'DELETE'});await load();})}>Remove</Button></div></CardContent></Card>;})}
      </div></section>}
 

@@ -18,7 +18,7 @@ export async function api(path:string,opts:{method?:string;body?:unknown}={}):Pr
 }
 const hex=(b:ArrayBuffer)=>Array.from(new Uint8Array(b),x=>x.toString(16).padStart(2,'0')).join('');
 export async function signIn(raw:string){
- let token=raw.trim();const m=/^agyp_([a-f0-9]{16}).(.+)$/i.exec(token);
+ let token=raw.trim();const m=/^agyp_([a-f0-9]{16})\.(.+)$/i.exec(token);
  if(!m){token='';throw new Error('Enter a complete access key, including its agyp_ prefix.');}
  const keyId=m[1];let k:CryptoKey|null;
  try{
