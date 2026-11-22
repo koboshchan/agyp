@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Real controlling-terminal regression tests; stdlib only, no live credentials.
+"""Real controlling-terminal regression tests; Python stdlib + existing Go WebSocket dependency, no live credentials.
 
 Run python3 cli/test_pty.py, or set AGYP_TEST_BINARY to test a built release.
 Each process owns a fresh PTY/session, and all spawned PIDs are cleaned up.
 """
 import errno
-import hashlib
-import hmac
-import http.server
 import json
 import os
 from pathlib import Path
@@ -18,80 +15,150 @@ import subprocess
 import sys
 import tempfile
 import termios
-import threading
 import time
 import unittest
 
 KEY = "agyp_0123456789abcdef.pty_regression_secret"
-NONCE = "pty_regression_nonce"
 TIMEOUT = 5
 
+# Built with the CLI's existing gorilla/websocket dependency, never a custom
+# framing/parser implementation. Cross-build and supply AGYP_TEST_FIXTURE_BINARY
+# when the target machine (e.g. macOS) doesn't have Go installed.
+WS_FIXTURE_GO = r"""
+package main
+
+import (
+ "crypto/hmac"
+ "crypto/sha256"
+ "encoding/hex"
+ "encoding/json"
+ "fmt"
+ "net"
+ "net/http"
+ "os"
+ "strings"
+ "sync"
+ "time"
+
+ "github.com/gorilla/websocket"
+)
+
+const key = "agyp_0123456789abcdef.pty_regression_secret"
+var output sync.Mutex
+func event(kind string) {
+ output.Lock()
+ defer output.Unlock()
+ encoded, _ := json.Marshal(map[string]string{"event":kind})
+ fmt.Println(string(encoded))
+}
+func main() {
+ blocked := ""
+ if len(os.Args)>1 { blocked=os.Args[1] }
+ listener, err := net.Listen("tcp", "127.0.0.1:0")
+ if err!=nil { panic(err) }
+ fmt.Println(listener.Addr().String())
+ upgrader := websocket.Upgrader{Subprotocols: []string{"agyp.v1"}}
+ http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  if r.URL.Path!="/transport" || r.Header.Get("Sec-WebSocket-Protocol")!="agyp.v1" {
+   event("error:unexpected REST or transport request")
+   http.Error(w, "transport only", 400)
+   return
+  }
+  conn, err := upgrader.Upgrade(w,r,nil)
+  if err!=nil {event("error:upgrade");return}
+  defer conn.Close()
+  conn.SetReadLimit(65536)
+  event("challenge")
+  // Hold the handshake at a precise stage, without sending a challenge/ready.
+  // A read blocks until the interrupted client actually closes the connection.
+  if blocked=="challenge" {conn.ReadMessage();return}
+  nonce,salt := strings.Repeat("n",43),strings.Repeat("s",43)
+  expires := time.Now().Add(30*time.Second).UnixMilli()
+  conn.WriteJSON(map[string]any{"type":"challenge","nonce":nonce,"salt":salt,"expires":expires})
+  var auth struct {Type string; KeyID string; Proof string}
+  if conn.ReadJSON(&auth)!=nil {event("error:missing proof");return}
+  mac:=hmac.New(sha256.New,[]byte(key))
+  mac.Write([]byte("agyp-ws-v1\n"+salt+"\n"+nonce))
+  proof,err:=hex.DecodeString(auth.Proof)
+  if err!=nil || auth.Type!="auth" || auth.KeyID!="0123456789abcdef" ||
+     !hmac.Equal(proof,mac.Sum(nil)) || time.Now().UnixMilli()>=expires {
+   event("error:invalid HMAC proof or expired challenge");return
+  }
+  event("verify")
+  if blocked=="verify" {conn.ReadMessage();return}
+  conn.WriteJSON(map[string]string{"type":"ready"})
+  event("ready")
+  for {
+   if _,_,err:=conn.ReadMessage();err!=nil{return}
+   event("error:unexpected application frame")
+  }
+ }))
+}
+"""
+
 class AuthServer:
+    fixture_binary = None
+
     def __init__(self, blocked=None):
         self.blocked = blocked
-        self.entered = threading.Event()
-        self.release = threading.Event()
         self.errors = []
         self.paths = []
-        owner = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_POST(self):
-                try:
-                    body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                    owner.paths.append(self.path)
-                    if self.path == owner.blocked:
-                        owner.entered.set()
-                        owner.release.wait(10)
-                    if self.path == "/auth/challenge":
-                        assert body["keyId"] == "0123456789abcdef"
-                        response = {"nonce": NONCE, "expires": int(time.time()) + 60}
-                    elif self.path == "/auth/verify":
-                        assert body["nonce"] == NONCE
-                        assert body["keyId"] == "0123456789abcdef"
-                        assert body["client"] == "cli"
-                        expected = hmac.new(KEY.encode(), NONCE.encode(), hashlib.sha256).hexdigest()
-                        assert hmac.compare_digest(body["proof"], expected)
-                        response = {"token": "fake-pty-session", "expires": int(time.time()) + 600}
-                    elif self.path == "/auth/logout":
-                        response = {}
-                    else:
-                        raise AssertionError("unexpected path " + self.path)
-                    encoded = json.dumps(response).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(encoded)))
-                    self.end_headers()
-                    self.wfile.write(encoded)
-                except (BrokenPipeError, ConnectionResetError):
-                    pass
-                except Exception as exc:
-                    owner.errors.append(repr(exc))
-                    self.send_error(500)
-
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
+        self.process = subprocess.Popen(
+            [str(self.fixture_binary), self.blocked or ""],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        self.pending = b""
+        self.address = self.line()
         return self
 
     def start(self):
-        # Fork the PTY child before starting any Python threads.
-        self.thread.start()
+        pass  # No Python threads; safe to fork the PTY child.
+
+    def line(self):
+        deadline = time.monotonic() + TIMEOUT
+        while b"\n" not in self.pending:
+            remaining = deadline-time.monotonic()
+            if remaining<=0 or not select.select([self.process.stdout],[],[],remaining)[0]:
+                raise AssertionError("WebSocket fixture did not respond")
+            data = os.read(self.process.stdout.fileno(),65536)
+            if not data:
+                raise AssertionError("WebSocket fixture exited: "+repr(self.pending))
+            self.pending += data
+        line,self.pending = self.pending.split(b"\n",1)
+        return line.decode()
+
+    def read_event(self):
+        event = json.loads(self.line())["event"]
+        if event.startswith("error:"):
+            self.errors.append(event)
+        else:
+            self.paths.append(event)
+        return event
+
+    def wait_entered(self):
+        while self.blocked not in self.paths:
+            self.read_event()
+        return True
+
+    def assert_authenticated(self):
+        while "ready" not in self.paths:
+            self.read_event()
+        if self.errors:
+            raise AssertionError(self.errors)
 
     @property
     def base(self):
-        return "http://127.0.0.1:" + str(self.server.server_port)
+        return "http://" + self.address
 
     def __exit__(self, *args):
-        self.release.set()
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(TIMEOUT)
+        self.process.terminate()
+        try:
+            self.process.wait(TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdout.close()
 
 
 class Terminal:
@@ -204,6 +271,13 @@ class PTYTests(unittest.TestCase):
         if not configured:
             subprocess.run(["go", "build", "-o", str(cls.binary), "."],
                            cwd=Path(__file__).resolve().parent, check=True)
+        fixture = os.environ.get("AGYP_TEST_FIXTURE_BINARY")
+        AuthServer.fixture_binary = Path(fixture).resolve() if fixture else cls.root / "ws-fixture"
+        if not fixture:
+            source = cls.root / "ws-fixture.go"
+            source.write_text(WS_FIXTURE_GO)
+            subprocess.run(["go", "build", "-o", str(AuthServer.fixture_binary), str(source)],
+                           cwd=Path(__file__).resolve().parent, check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -213,12 +287,12 @@ class PTYTests(unittest.TestCase):
         self.assertEqual(terminal.before, termios.tcgetattr(terminal.fd), terminal.output)
 
     def blocked_auth(self, path):
-        pidfile = self.root / (path.rsplit("/", 1)[1] + ".pid")
+        pidfile = self.root / (path.rsplit("/", 1)[-1] + ".pid")
         with AuthServer(blocked=path) as auth:
             terminal = Terminal(self.binary, auth.base, BLOCKED_CHILD, pidfile)
             auth.start()
             try:
-                self.assertTrue(auth.entered.wait(TIMEOUT), "auth endpoint was not reached")
+                self.assertTrue(auth.wait_entered(), "auth endpoint was not reached")
                 # Write the terminal interrupt character, not kill(SIGINT): real tty semantics.
                 os.write(terminal.fd, b"\x03")
                 self.assertEqual(terminal.wait(), 130, terminal.output)
@@ -231,10 +305,10 @@ class PTYTests(unittest.TestCase):
                 terminal.close()
 
     def test_ctrl_c_during_challenge(self):
-        self.blocked_auth("/auth/challenge")
+        self.blocked_auth("challenge")
 
     def test_ctrl_c_during_verify(self):
-        self.blocked_auth("/auth/verify")
+        self.blocked_auth("verify")
 
     def test_cooked_ctrl_c_is_delivered_once(self):
         pidfile = self.root / "count.pid"
@@ -260,6 +334,7 @@ raise SystemExit(130)
             auth.start()
             try:
                 terminal.until(b"COUNT_READY")
+                auth.assert_authenticated()
                 os.write(terminal.fd, b"\x03")
                 self.assertEqual(terminal.wait(), 130, terminal.output)
                 self.assertIn(b"SIGNAL_COUNT 1", terminal.output)
@@ -293,6 +368,7 @@ raise SystemExit(130)
                 self.assertEqual(state["tty"], [True, True, True])
                 self.assertEqual(state["pgid"], state["foreground"], state)
                 terminal.until(b"READY")
+                auth.assert_authenticated()
                 os.write(terminal.fd, b"hello from actual terminal\n")
                 terminal.until(b"RECEIVED hello from actual terminal")
                 os.write(terminal.fd, b"\x03")
@@ -302,7 +378,8 @@ raise SystemExit(130)
                 with self.assertRaises(ProcessLookupError, msg="child survived wrapper exit"):
                     os.kill(state["pid"], 0)
                 self.assertFalse(auth.errors, auth.errors)
-                self.assertEqual(auth.paths[:2], ["/auth/challenge", "/auth/verify"])
+                auth.assert_authenticated()
+                self.assertEqual(auth.paths[:2], ["challenge", "verify"])
                 print("\nPTY_EVIDENCE " + json.dumps(dict(test="raw" if raw else "interactive", exit=terminal.status,
                       terminal_restored=True, child_alive=False, **state)), flush=True)
             finally:
