@@ -1,72 +1,126 @@
-agyp keeps a shared Google account pool on one server and connects local agy processes to it. The server is TypeScript on Node.js 24 with SQLite, a browser dashboard, and a Go CLI wrapper. This repository stays private until publication is explicitly approved.
+<div align="center">
 
-The deployment target is https://agy.kjt.lol. The dashboard, authentication, and inference endpoints share one public HTTPS port. Docker listens internally on 54873; the supplied Compose file exposes it only to the existing `oneserver_bridge` network and does not publish a host port. Configure the HTTPS reverse proxy separately to forward to `agyp:54873`, preserving streaming responses, WebSocket upgrade headers on `/transport`, and long requests. Set its WebSocket idle timeout above 45 seconds; the server sends heartbeats every 15 seconds. The private dashboard is deployed. Native Google OAuth and compatibility with the actual agy client still need separate verification.
+<strong>agyp</strong>
 
-With Docker Compose installed and the external proxy network already present, prepare the server from the repository root.
+A self-hosted Antigravity gateway, with a web dashboard and terminal client.
+
+[![CI](https://github.com/koboshchan/agyp/actions/workflows/ci.yml/badge.svg)](https://github.com/koboshchan/agyp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/koboshchan/agyp)](https://github.com/koboshchan/agyp/releases)
+[![License](https://img.shields.io/github/license/koboshchan/agyp)](LICENSE)
+
+[Get started](#get-started) · [Host a server](#host-a-server) · [Quotas](#quotas-and-usage) · [Development](#development)
+
+</div>
+
+Keep Google account credentials on your server and give clients separate access keys. The Go CLI runs `agy` through an authenticated WebSocket connection; the React dashboard manages the account pool, access keys, and usage history.
+
+The gateway supports streaming responses, per-key model restrictions, token caps, and never-resetting, five-hour, or weekly accounting periods. Administrators can inspect usage by key and model, including deleted-key history. Regular users see only their own usage.
+
+<a id="get-started"></a>
+**Get started**
+
+You need access to an agyp server, a user key issued by its administrator, and an installed `agy` executable. Download your platform archive from [Releases](https://github.com/koboshchan/agyp/releases/latest), verify it against `checksums.txt`, extract it, and place `agyp` or `agyp.exe` on PATH.
+
+| Platform | Archive |
+| --- | --- |
+| Linux x64 / ARM64 | `agyp-linux-amd64.tar.gz` / `agyp-linux-arm64.tar.gz` |
+| macOS Apple Silicon | `agyp-darwin-arm64.tar.gz` |
+| Windows x64 / ARM64 | `agyp-windows-amd64.zip` / `agyp-windows-arm64.zip` |
+
+Set `AGYP_BASE` to your server's HTTPS origin and provide `AGYP_TOKEN` privately through your shell environment or secret manager. Do not paste the key into commands saved in shell history.
 
 ```sh
+export AGYP_BASE=https://agyp.example.com
+# Supply AGYP_TOKEN privately before running.
+agyp --version
+agyp -- agy
+agyp -- agy --conversation=EXISTING_ID
+```
+
+PowerShell uses `$env:AGYP_BASE = 'https://agyp.example.com'`; supply `AGYP_TOKEN` through the same private mechanism you use for other credentials. The CLI does not save environment variables or edit shell profiles. Building it from source requires Go 1.23 or newer.
+
+```sh
+git clone https://github.com/koboshchan/agyp.git
+cd agyp
+(cd cli && go build -trimpath -o ../agyp .)
+```
+
+<a id="host-a-server"></a>
+**Host a server**
+
+The supplied [Compose configuration](compose.yaml) expects Docker Compose, an existing external network named `oneserver_bridge`, and an HTTPS reverse proxy on that network. It exposes port 54873 inside Docker only, not on the host.
+
+```sh
+git clone https://github.com/koboshchan/agyp.git
+cd agyp
 cp .env.example .env
-chmod 600 .env
-# Fill in the Google OAuth client settings and public origin in .env.
-# Set TRUSTED_PROXIES only to the exact proxy address or a narrow proxy subnet.
+# Edit .env for your own deployment before starting.
 docker compose up -d --build
 docker compose logs agyp
 ```
 
-The administrator token is printed on EVERY server startup, including restarts. Treat Docker logs as credentials. Open the public origin and log in with that token. Add Google accounts through the dashboard. With the example loopback OAuth redirect, finish Google consent locally and paste the complete callback URL into the dashboard; no second public port is needed. The redirect must match the Google OAuth client configuration.
+| Setting | Purpose |
+| --- | --- |
+| `PUBLIC_ORIGIN` | Your public HTTPS origin, such as `https://agyp.example.com` |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Credentials for your Google OAuth application |
+| `OAUTH_REDIRECT_URI` | Registered OAuth callback; default `http://localhost:54874/oauth/callback` |
+| `TRUSTED_PROXIES` | Exact proxy addresses or a narrowly scoped proxy subnet; empty trusts none |
 
-Create named user keys in the dashboard. Keys support total, input, and output token allowances, optional expiry, and never/daily/weekly/monthly reset periods. Calendar resets use UTC, with weeks starting Monday. Administrators can manage accounts and keys and inspect per-key/model input, output, cached, and noncached usage. Ordinary keys can view only their own usage. Save a newly created key when it is shown; normal API responses do not reveal it again.
+Change the example origin in `.env`; it is not a shared service configuration. Configure your own OAuth application for the callback URI. The dashboard's account flow asks you to paste the full callback URL after Google redirects to localhost.
 
-Quotas use the admission window. A request admitted before a UTC reset is charged to that prior window even if it finishes after the reset. In-flight reservations count toward that window's allowance, so concurrent requests cannot spend the same remaining budget.
+Route HTTPS traffic to `agyp:54873`. The reverse proxy must preserve streaming and forward WebSocket upgrades on `/transport`. Use an idle timeout longer than 45 seconds; the transport sends heartbeats every 15 seconds.
 
-Keys with any finite token allowance are text-only for generation. Media and `cachedContent` are rejected until count-safe support exists, and `candidateCount` must be 1. Admission reserves a conservative input upper bound of request-body bytes plus 1024 tokens, along with `maxOutputTokens` for output. A request can be rejected when that upper bound does not fit, even if its eventual token usage would have fit. Reported usage replaces the reservation on completion; if generation usage is missing, the reservation is charged instead of treating the request as free.
+The server prints a new admin token at every startup. Use it to sign into the dashboard, add Google pool accounts, and create ordinary user keys for clients.
 
-Build the CLI with Go 1.23 or later, or use a release archive for Linux amd64/arm64, macOS arm64, or Windows amd64/arm64. Windows archives are ZIP files containing agyp.exe.
+> [!WARNING]
+> Startup logs contain the admin token. Restrict log access, protect `.env`, and never distribute the admin token as a client key.
 
-```sh
-(cd cli && go build -trimpath -o ../agyp .)
-export AGYP_BASE=https://agy.kjt.lol
-read -r -s AGYP_TOKEN
-export AGYP_TOKEN
-./agyp -- agy
-```
+<a id="quotas-and-usage"></a>
+**Quotas and usage**
 
-On Windows, extract the ZIP and run `agyp.exe -- agy` from PowerShell or Git Bash. Set `AGYP_BASE` and `AGYP_TOKEN` only in the current shell process; the CLI does not modify profiles or persist credentials. It shares the caller's console for Ctrl-C/Ctrl-Break, restores console modes, and places its child tree in a private kill-on-close job. Windows ARM64 builds require separate native validation on ARM64 hardware.
+Each key can restrict models and set token caps. A null cap is unlimited; a zero cap denies usage. The period controls when usage resets, not whether the key has a cap.
 
-The CLI binds an ephemeral loopback listener, authenticates to the server, and launches the supplied command. It sets a per-launch capability-prefixed `CLOUD_CODE_URL` plus authenticated Basic forward-proxy variables, and removes `AGYP_TOKEN` from the child environment. The child must honor those settings. HTTPS CONNECT traffic is tunneled, not decrypted or rewritten; clients that ignore `CLOUD_CODE_URL` and use HTTPS directly may bypass inference routing. Test the actual agy version before relying on this integration.
+| Period | Reset behavior |
+| --- | --- |
+| `never` | Usage accumulates without a scheduled reset |
+| `5h` | First admitted generation anchors a five-hour window; control requests do not start it |
+| `weekly` | Monday at 00:00 UTC |
 
-Browser and legacy REST login send a key ID, a one-time 60-second nonce, and `HMAC-SHA256(key, nonce)`, never the permanent raw key. REST sessions last at most 15 minutes and are stored hashed in the database. The browser uses an HttpOnly cookie with CSRF checks. The current source CLI instead opens one WebSocket with subprotocol `agyp.v1` at `/transport` and authenticates using a fresh connection-specific salt and nonce: `HMAC-SHA256(key, "agyp-ws-v1\\n" + salt + "\\n" + nonce)`. No REST session or bearer token is created for that connection. Use HTTPS/WSS outside loopback. Key creation is the deliberate exception where the administrator receives the new raw key once.
+Admission checks already-recorded usage. After a response, agyp charges the actual Google-reported usage to the request's admission window. It does not reserve an estimate in advance, so concurrent requests or a single large response can exceed the remaining cap. Missing usage metadata contributes zero recorded tokens. Media requests are allowed on capped keys.
 
-The WebSocket multiplexes bounded request streams through the existing admission, quota, rotation and usage-accounting pipeline. Each connection supports at most eight active requests, a 64 KiB frame limit, 16 MiB per body, 32 MiB aggregate in-flight bodies per connection (64 MiB server-wide), and a ten-minute request deadline. Responses stream in 32 KiB chunks; a stalled reader is canceled rather than holding up unrelated requests. Revocation and expiry are checked before each new request. After a disconnect, only a new caller-initiated request reconnects and reauthenticates. Dispatched requests, including partial output, are never automatically replayed. A transport failure can therefore return an error even if the provider already performed billable work; retrying is the caller's explicit decision.
+Explicit `maxOutputTokens` must be an integer from 1 to 1,000,000; upstream model limits still apply. Omitting it is supported. Finite-cap keys reject unclassified actions rather than treating them as free.
 
-Permanent API keys are stored in plaintext in the private, mode-600 SQLite database, by design. Google account credentials are AES-256-GCM encrypted with `seal.key`, also mode 600, beside the database. The data directory is mode 700. Filesystem or volume access therefore exposes both API keys and the account decryption key. Restrict host access and protect backups, `.env`, and logs. Back up the entire `agyp_data` volume consistently while the service is stopped, including `seal.key`; losing that file loses access to saved account credentials. Never commit runtime data or credentials.
+The dashboard separates control traffic from generation usage and shows input, output, cached, and noncached totals. Soft-deleting a key preserves its history.
 
-For local checks, use Node.js 24 and Go 1.23 or later.
+**Transport and storage**
+
+The client authenticates with HMAC-SHA256 using a connection-specific challenge, then multiplexes requests over WSS at `/transport`. Reconnection performs authentication again. Dispatched requests and partial streams are not automatically replayed. The browser and legacy REST path use challenge-based login, HttpOnly session cookies, and CSRF protection.
+
+The CLI starts an authenticated loopback bridge and supplies `CLOUD_CODE_URL` and proxy settings to its child. It removes `AGYP_TOKEN` from the child environment. HTTP is allowed only for loopback server origins.
+
+> [!IMPORTANT]
+> This is an application gateway, not a transparent TLS interception proxy. CONNECT tunnels are not decrypted. A client that ignores `CLOUD_CODE_URL` may bypass gateway routing.
+
+The Node.js/Express server stores data in SQLite; the React UI is built separately, and the Go client lives in [cli/](cli). Google credentials are encrypted with AES-256-GCM using the adjacent `seal.key`. Permanent access keys remain plaintext in the private database. Protect the entire data directory and its backups.
+
+Compose persists state in `agyp_data`. For a consistent backup, stop the service and back up the whole volume, including `seal.key`; the database alone cannot restore encrypted credentials.
+
+<a id="development"></a>
+**Development**
+
+Use Node.js 24+ and Go 1.23+. These commands build and test locally; they do not deploy a server.
 
 ```sh
 npm ci
 npm run build
 npm run build:web
 npm test
-npx playwright install --with-deps chromium
 npm run test:browser
 npm run test:integration
 npm run test:cli
-(cd cli && go vet ./... && go test -race ./...)
+(cd cli && go test -race ./... && go vet ./...)
 ```
 
-`CHROME_BIN` can select an existing Chromium executable. `test:browser` exercises the mocked UI contract. `test:integration` runs Chromium against the real Express server and SQLite database, and `test:cli` runs the real Go CLI against a fake Google upstream. Both integration suites pass locally; real Google OAuth and the actual agy client remain untested. CI runs these suites, Go vet and race checks, and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs and two Windows ZIPs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
+See [CI](.github/workflows/ci.yml) for platform builds and test setup. Tagged releases publish five client archives and checksums; releasing a client does not deploy the server or update existing installations.
 
-### Google request compatibility
-
-The Google routing layer tracks switcher commit `b48b163`: forced refresh and same-account retry on 401, structured verification exclusion and direct quota rechecks, Argon Ultra promotion and Pro weekly-trial fallback, provider-family exhaustion, early cooldown recovery after a healthy quota poll, and reactive Gemini thought-signature repair. Ordinary generation bodies retain their original JSON bytes and user agent. Only a routed model change or a provider-requested signature repair changes the body. The authenticated response header `x-agyp-upstream-model` identifies the selected model without exposing the underlying account.
-
-There is deliberately no default output-token injection. A key with any finite allowance must supply an explicit canonical `generationConfig.maxOutputTokens`; missing bounds return 422 before admission. Unlimited keys may omit it. Bounded keys remain text-only, single-candidate and subject to conservative byte-based input reservation, including any reactive repair. A reset period of `never` means the allowance does not reset, **not** unlimited access. Unlimited allowances are represented by omitted/null caps; a cap of zero allows no spending.
-
-The Cloud Code surface follows the switcher's unrestricted method forwarding inside `/v1internal:` and `/v1internal/` service namespaces, plus the existing `/v1` and `/v1beta` model actions. GET, HEAD, POST, PUT, PATCH, DELETE and OPTIONS are supported through authenticated REST and multiplexed WebSocket transport. The CLI uses the same path/method matrix. Request bytes, response bytes and unknown response fields are preserved, including `loadCodeAssist`, `onboardUser`, model discovery, quota, experiments and metrics. Account routing, model fallback and thought-signature repair retain the previously documented behavior.
-
-This is not an arbitrary-host tunnel. Fixed upstream origin, localhost capability authentication, WebSocket HMAC proof, administrative/credential-management denial, canonical path validation, private header filtering, 16 MB requests, ten-minute deadlines and sanitized provider failures remain security boundaries. CONNECT and TRACE are not proxied as Cloud Code operations. Provider redirects are not followed. Native OAuth and actual agy-client compatibility require separate real-client checks; fake-upstream tests do not establish either.
-
-Normal unlimited keys may invoke the full service surface, including unknown future operations, with ordinary concurrency admission and usage accounting. Bounded keys may invoke recognized generation with conservative reservation and known read-only/telemetry controls; unclassified actions return 422 before dispatch because their maximum token cost cannot be established. This restriction does not apply to unlimited normal keys. Bounded-key `POST /v1internal:loadCodeAssist` retains the strict read-only bootstrap, accepting only `metadata.ideType` equal to `ANTIGRAVITY`, with fixed server-owned body and tier-only response. Unlimited keys receive the actual upstream response instead. A failed or usage-less known generation retains its conservative charge, not zero.
-
-The shared fixture `test/fixtures/cloudcode-paths.json` is exercised at the Go CLI boundary, REST adapter, authenticated WebSocket adapter, and actual Go-to-Node transport. It covers named operations, future namespace actions, all supported methods, query fidelity, bounded-key denial, administrative denial and SSRF/path ambiguity rejection.
+Code is [MIT licensed](LICENSE); dependency notices are in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Google account access and upstream service terms are separate.
