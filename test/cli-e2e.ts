@@ -52,7 +52,7 @@ try {
  const binary=join(dir,'agyp');
  await execute('go',['build','-o',binary,'.'],process.env,resolve('cli'));
  const upstreamURL=await listen(upstream),directURL=await listen(direct);
- store.putAccount({id:'fake',email:'fake@example.invalid',refresh_token:'fake-refresh',access_token:'fake-google-access',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[{family:'argon',label:'Argon',remaining:1,reset:0}],cooldowns:{},denied:{},updated:Date.now()});
+ store.putAccount({id:'fake',email:'fake@example.invalid',refresh_token:'fake-refresh',access_token:'fake-google-access',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[{family:'gemini',label:'Gemini',remaining:1,reset:0}],cooldowns:{},denied:{},updated:Date.now()});
  const normal=store.createKey({name:'CLI integration normal',allowance:10000});
  assert.equal(normal.key.admin,0);
  const config={origin:'',upstream:upstreamURL,clientId:'',clientSecret:'',secure:false};
@@ -71,9 +71,14 @@ try {
  assert.match(cloud.pathname,/^\/[A-Za-z0-9_-]{43}$/);
  assert.equal(proxy.username,'agyp');assert.equal(proxy.password,cloud.pathname.slice(1));
  assert.equal(process.env.HTTPS_PROXY,process.env.HTTP_PROXY);
- const body=JSON.stringify({model:'gemini-4-argon-trial',request:{contents:[{parts:[{text:'hello'}]}],generationConfig:{maxOutputTokens:20}}});
+ const body=JSON.stringify({model:'gemini-flash',request:{contents:[{parts:[{text:'hello'}]}],generationConfig:{maxOutputTokens:20}}});
  const denied=await fetch(cloud.origin+'/api/keys');assert.equal(denied.status,403);
  const admin=await fetch(cloud.href+'/api/keys');assert.equal(admin.status,403);
+ // Limited keys reject every approved prefix locally before any mock upstream call.
+ for(const model of ['gemini-4-argon-trial','claude-test','gpt-oss-test']){
+ const blocked=await fetch(cloud.href+'/v1internal:streamGenerateContent?alt=sse',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model,request:{contents:[]}})});
+ assert.equal(blocked.status,403);assert.equal((await blocked.json()).error.message,'unsupported for limited key');
+ }
  const stream=await fetch(cloud.href+'/v1internal:streamGenerateContent?alt=sse',{method:'POST',headers:{'content-type':'application/json'},body});
  assert.equal(stream.status,200);assert.equal(stream.headers.get('x-e2e-upstream'),'real-forward');
  const reader=stream.body.getReader(),first=await reader.read();assert(!first.done);let text=Buffer.from(first.value).toString();
