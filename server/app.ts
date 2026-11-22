@@ -8,11 +8,12 @@ import {resolve} from 'node:path';
 import {Store,digest,secret,type Key} from './store.js';
 import {Pool} from './pool.js';
 import {proxy} from './proxy.js';
+import {createBootstrap,allowedBootstrap} from './bootstrap.js';
 
 export type Config={origin:string;upstream:string;clientId:string;clientSecret:string;oauthRedirect?:string;secure:boolean;trustedProxy?:string[];loginLimit?:number};
 const keySchema=z.object({name:z.string().trim().min(1).max(100),allowance:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),inputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),outputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),period:z.enum(['never','daily','weekly','monthly']).default('never'),expires:z.number().int().min(1).max(8640000000000000).nullable().default(null)}).strict();
 export function createApp(store:Store,config:Config){
- const app=express(),pool=new Pool(store,config.upstream,config.clientId,config.clientSecret);
+ const app=express(),pool=new Pool(store,config.upstream,config.clientId,config.clientSecret),bootstrap=createBootstrap(store,pool);
  app.disable('x-powered-by');if(config.trustedProxy?.length)app.set('trust proxy',config.trustedProxy);
  app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'"],styleSrc:["'self'"],imgSrc:["'self'","data:"],connectSrc:["'self'"],objectSrc:["'none'"],baseUri:["'none'"],frameAncestors:["'none'"],formAction:["'self'"],upgradeInsecureRequests:config.secure?[]:null}},strictTransportSecurity:config.secure?{maxAge:31536000,includeSubDomains:false}:false}));
  app.use((_req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
@@ -87,9 +88,9 @@ export function createApp(store:Store,config:Config){
  app.use((req,res,next)=>{if(!/^\/v1(?:internal|beta)?(?=[:/]|$)/.test(req.path)){res.status(404).json({error:{message:'Not found'}});return;}next();},sameOrigin,auth,express.raw({type:()=>true,limit:'16mb'}),async(req,res)=>{
   // app.use trims the prefix; originalUrl retains the exact upstream path.
   const saved=req.url;req.url=req.originalUrl;
-  try{await proxy(req,res,res.locals.key,store,pool);}finally{req.url=saved;}
+  try{if(allowedBootstrap(req.method,req.originalUrl))await bootstrap(req,res,res.locals.key);else await proxy(req,res,res.locals.key,store,pool);}finally{req.url=saved;}
  });
  app.use((_req,res)=>res.status(404).json({error:{message:'Not found'}}));
  app.use((err:any,_req:Request,res:Response,_next:NextFunction)=>{if(res.headersSent){res.destroy();return;}const status=err instanceof z.ZodError?400:err.status??500;res.status(status).json({error:{message:status>=500?'Request failed':err.message}});});
- return {app,pool};
+ return {app,pool,bootstrap};
 }

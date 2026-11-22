@@ -238,6 +238,8 @@ func (t *wsTransport) connection(ctx context.Context) (*wsConn, error) {
 	if e != nil {
 		return nil, errors.New("agyp websocket connection failed")
 	}
+	stopAuthCancel := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stopAuthCancel()
 	good := false
 	defer func() {
 		if !good {
@@ -290,7 +292,7 @@ func (t *wsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return t.fallback.RoundTrip(req)
 	}
 	path := strings.TrimPrefix(req.URL.EscapedPath(), strings.TrimRight(t.base.Path, "/"))
-	if !inferenceAllowed(req.Method, path) || req.URL.RawPath != "" {
+	if (!inferenceAllowed(req.Method, path) && !(req.Method == "POST" && path == "/v1internal:loadCodeAssist" && req.URL.RawQuery == "")) || req.URL.RawPath != "" {
 		return nil, errors.New("agyp websocket endpoint forbidden")
 	}
 	if req.URL.RawQuery != "" {

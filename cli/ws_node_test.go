@@ -32,6 +32,23 @@ func TestWSNodeIntegration(t *testing.T) {
 	if e = tr.Connect(ctx); e != nil {
 		t.Fatal(e)
 	}
+	bootstrap, _ := http.NewRequestWithContext(ctx, "POST", base+"/v1internal:loadCodeAssist", strings.NewReader("{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"}}"))
+	bootResp, e := tr.RoundTrip(bootstrap)
+	if e != nil {
+		t.Fatal(e)
+	}
+	bootBody, e := io.ReadAll(bootResp.Body)
+	bootResp.Body.Close()
+	if e != nil || bootResp.StatusCode != 200 || strings.Contains(string(bootBody), "private") || !strings.Contains(string(bootBody), "premium-tier") {
+		t.Fatal(string(bootBody), e)
+	}
+	for _, target := range []string{"/api/keys", "/v1internal:onboardUser", "/v1internal:loadCodeAssist?x=1", "/v1internal:listExperiments", "/v1internal/cascadeNuxes"} {
+		r, _ := http.NewRequestWithContext(ctx, "POST", base+target, nil)
+		if resp, err := tr.RoundTrip(r); err == nil {
+			resp.Body.Close()
+			t.Error("unsafe websocket endpoint allowed", target)
+		}
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)

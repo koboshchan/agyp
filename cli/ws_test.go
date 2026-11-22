@@ -314,3 +314,34 @@ func TestWSCancelUnblocksUploadAndPreservesOtherStreams(t *testing.T) {
 		t.Fatal(string(b), e)
 	}
 }
+func TestWSConnectContextCancellationUnblocksHandshake(t *testing.T) {
+	upgrader := websocket.Upgrader{Subprotocols: []string{"agyp.v1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, e := upgrader.Upgrade(w, r, nil)
+		if e != nil {
+			return
+		}
+		defer c.Close()
+		var f wsFrame
+		c.ReadJSON(&f)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	tr, e := newWSTransport(u, testKey)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tr.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- tr.Connect(ctx) }()
+	cancel()
+	select {
+	case e := <-done:
+		if e == nil {
+			t.Fatal("canceled handshake succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("connect ignored cancellation")
+	}
+}

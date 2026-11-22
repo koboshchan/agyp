@@ -8,6 +8,7 @@ import {createServer,type Server} from 'node:http';
 import {spawn} from 'node:child_process';
 import {Store} from '../server/store.js';
 import {createApp} from '../server/app.js';
+import {attachWebSocket} from '../server/ws.js';
 
 async function listen(s:Server){
  await new Promise<void>((r,j)=>{s.once('error',j);s.listen(0,'127.0.0.1',()=>{s.off('error',j);r();});});
@@ -45,7 +46,7 @@ const direct=createServer((req,res)=>{
  assert.equal(req.headers.cookie,undefined);
  res.end('direct-ok');
 });
-let server:Server|undefined;
+let server:Server|undefined,transport:ReturnType<typeof attachWebSocket>|undefined;
 let releaseTimer:ReturnType<typeof setInterval>|undefined;
 try {
  const binary=join(dir,'agyp');
@@ -55,13 +56,13 @@ try {
  const normal=store.createKey({name:'CLI integration normal',allowance:10000});
  assert.equal(normal.key.admin,0);
  const config={origin:'',upstream:upstreamURL,clientId:'',clientSecret:'',secure:false};
- const {app}=createApp(store,config);
+ const {app,pool,bootstrap}=createApp(store,config);
  // A separate test-only listener confirms first-chunk delivery before allowing upstream completion.
  let gotFirst=false;
  const observer=createServer((_req,res)=>{gotFirst=true;res.end('ok');});
  try{
  const observerURL=await listen(observer);
- server=createServer(app);config.origin=await listen(server);
+ server=createServer(app);transport=attachWebSocket(server,store,pool,bootstrap);config.origin=await listen(server);
  const child=String.raw`
  const assert=require('node:assert/strict'),http=require('node:http');
  (async()=>{
@@ -100,10 +101,10 @@ try {
  assert.equal(stats.length,1);assert.equal(stats[0].key_id,normal.key.id);
  assert.equal(stats[0].input,12);assert.equal(stats[0].output,4);assert.equal(stats[0].cached,3);assert.equal(stats[0].total,16);
  assert.equal(store.used(normal.key).total,16);
- assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE key_id=?').get(normal.key.id) as any).n,1);
+ assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE key_id=?').get(normal.key.id) as any).n,0);
  assert.equal((store.db.prepare('SELECT COUNT(*) AS n FROM challenges').get() as any).n,0);
  console.log('PASS real Go CLI + createApp/Store: normal-key HMAC handshake, consumed nonce, capability/admin boundary, streamed first chunk before completion, usage 12 input/4 output/3 cached/16 total, authenticated HTTP proxy, credential stripping');
 }finally{
  if(releaseTimer)clearInterval(releaseTimer);releaseStream?.();
- if(server)await close(server);await close(upstream);await close(direct);store.close();await rm(dir,{recursive:true,force:true});
+ await transport?.close();if(server)await close(server);await close(upstream);await close(direct);store.close();await rm(dir,{recursive:true,force:true});
 }

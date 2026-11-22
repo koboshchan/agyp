@@ -8,6 +8,7 @@ import {z} from 'zod';
 import {Store,type Key} from './store.js';
 import {Pool} from './pool.js';
 import {proxy,allowedProxy} from './proxy.js';
+import {createBootstrap,allowedBootstrap} from './bootstrap.js';
 
 const MAX_BODY=16*1024*1024,MAX_BUFFER=1024*1024;
 const id=z.string().regex(/^[a-f0-9]{32}$/);
@@ -36,7 +37,7 @@ class SocketResponse extends Writable{
 }
 type Pending={method:string;path:string;headers:Record<string,string>;parts:Buffer[];bytes:number;timer:NodeJS.Timeout;res?:SocketResponse};
 
-export function attachWebSocket(server:Server,store:Store,pool:Pool){
+export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=createBootstrap(store,pool)){
  const wss=new WebSocketServer({noServer:true,maxPayload:65536,perMessageDeflate:false});
  const jobs=new Set<Promise<unknown>>();let stopping=false;
  let active=0,buffered=0,rateWindow=Date.now(),rateTotal=0;const perKey=new Map<string,number>(),ipRates=new Map<string,number>(),ipConnections=new Map<string,number>();
@@ -90,7 +91,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool){
     const key=store.key(keyId);if(!store.valid(key))throw new Error('Key expired or revoked');
     const f=frames.parse(msg);
     if(f.type==='start'){
-     if(seen.has(f.id)||seen.size>=10000||pending.size>=8||active>=128||!allowedProxy(f.method,f.path)||f.deadline<=Date.now()||f.deadline>Date.now()+600000)throw new Error('Request rejected');
+     if(seen.has(f.id)||seen.size>=10000||pending.size>=8||active>=128||(!allowedProxy(f.method,f.path)&&!allowedBootstrap(f.method,f.path))||f.deadline<=Date.now()||f.deadline>Date.now()+600000)throw new Error('Request rejected');
      seen.add(f.id);
      const timer=setTimeout(()=>{send({type:'error',id:f.id,message:'Request deadline exceeded; not replayed'});remove(f.id,true);},Math.min(600000,f.deadline-Date.now()));timer.unref();
      pending.set(f.id,{method:f.method,path:f.path,headers:f.headers,parts:[],bytes:0,timer});return;
@@ -109,7 +110,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool){
     // Mark dispatched before invoking the pipeline. There is no resume/replay protocol.
     const req={method:p.method,originalUrl:p.path,path:new URL(p.path,'http://local').pathname,headers:Object.fromEntries(Object.entries(p.headers).map(([k,v])=>[k.toLowerCase(),v])),body:Buffer.concat(p.parts)} as Request;
     p.parts=[];
-    const job=proxy(req,res as unknown as Response,key as Key,store,pool).catch((err:any)=>{
+    const job=(allowedBootstrap(req.method,req.originalUrl)?bootstrap(req,res as unknown as Response,key as Key):proxy(req,res as unknown as Response,key as Key,store,pool)).catch((err:any)=>{
      if(!res.headersSent&&!res.destroyed)res.status([400,401,403,422,429].includes(err?.status)?err.status:502).json({error:{message:'Request rejected'}});
      else if(!res.writableEnded)res.destroy();
     }).finally(()=>{remove(f.id);jobs.delete(job);});

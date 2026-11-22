@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 const testKey = "agyp_0123456789abcdef.supersecret"
@@ -187,8 +189,15 @@ func TestLaunch(t *testing.T) {
 		}
 		os.Exit(7)
 	}
-	s, _, _ := authServer(t, func(http.ResponseWriter, *http.Request) {})
-	t.Setenv("AGYP_BASE", s.URL)
+	tr, _ := socketServer(t, func(c *websocket.Conn, _ int32) {
+		for {
+			var f wsFrame
+			if c.ReadJSON(&f) != nil {
+				return
+			}
+		}
+	})
+	t.Setenv("AGYP_BASE", tr.base.String())
 	t.Setenv("AGYP_TOKEN", testKey)
 	t.Setenv("AGYP_TEST_CHILD", "1")
 	exe, e := os.Executable()
@@ -306,7 +315,7 @@ func TestLocalCredentialBoundary(t *testing.T) {
 	var remote atomic.Int32
 	_, a, n := authServer(t, func(w http.ResponseWriter, r *http.Request) {
 		remote.Add(1)
-		if !inferenceAllowed(r.Method, r.URL.Path) || strings.Contains(r.URL.Path, "testcap") {
+		if (!inferenceAllowed(r.Method, r.URL.Path) && r.URL.Path != "/v1internal:loadCodeAssist") || strings.Contains(r.URL.Path, "testcap") {
 			t.Errorf("unsafe upstream path %s", r.URL.Path)
 		}
 		if r.Header.Get("Authorization") != "Bearer session1" {
@@ -321,7 +330,8 @@ func TestLocalCredentialBoundary(t *testing.T) {
 	}{
 		{"POST", "/api/keys", 403},
 		{"POST", "/testcap/api/keys", 403},
-		{"POST", "/testcap/v1internal:loadCodeAssist", 403},
+		{"POST", "/testcap/v1internal:loadCodeAssist?project=x", 403},
+		{"GET", "/testcap/v1internal:loadCodeAssist", 403},
 		{"POST", "/testcap/v1internal:onboardUser", 403},
 		{"POST", "/wrong/v1internal:generateContent", 403},
 		{"POST", "/testcap/v1internal:generateContent/../api/keys", 403},
@@ -337,6 +347,7 @@ func TestLocalCredentialBoundary(t *testing.T) {
 		{"GET", "/testcap/v1beta/models", 204},
 		{"POST", "/testcap/v1/models/gemini-3:generateContent", 204},
 		{"POST", "/testcap/v1beta/models/gemini-3:countTokens", 204},
+		{"POST", "/testcap/v1internal:loadCodeAssist", 204},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			r := httptest.NewRequest(tc.method, tc.path, nil)
@@ -350,7 +361,7 @@ func TestLocalCredentialBoundary(t *testing.T) {
 			}
 		})
 	}
-	if remote.Load() != 8 || n.Load() != 1 {
+	if remote.Load() != 9 || n.Load() != 1 {
 		t.Fatal(remote.Load(), n.Load())
 	}
 }
@@ -375,7 +386,7 @@ func TestProxyRequiresCapability(t *testing.T) {
 func TestProxyCloudCodeAllowlist(t *testing.T) {
 	_, a, n := authServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected remote") })
 	h := &shim{a, client(), "testcap"}
-	for _, path := range []string{"/api/keys", "/v1internal:loadCodeAssist", "/v1internal:onboardUser"} {
+	for _, path := range []string{"/api/keys", "/v1internal:loadCodeAssist?project=x", "/v1internal:onboardUser"} {
 		r := httptest.NewRequest("POST", "http://cloudcode-pa.googleapis.com"+path, nil)
 		r.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("agyp:testcap")))
 		w := httptest.NewRecorder()

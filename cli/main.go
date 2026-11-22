@@ -196,7 +196,7 @@ func (s *shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		u.Path = strings.TrimPrefix(u.Path, prefix)
 		r.URL = &u
 	}
-	if r.URL.RawPath != "" || !inferenceAllowed(r.Method, r.URL.Path) {
+	if r.URL.RawPath != "" || (!inferenceAllowed(r.Method, r.URL.Path) && !(r.Method == "POST" && r.URL.Path == "/v1internal:loadCodeAssist" && r.URL.RawQuery == "")) {
 		http.Error(w, "inference endpoint forbidden", 403)
 		return
 	}
@@ -218,14 +218,20 @@ func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *au
 		}
 		os.Remove(body.Name())
 		defer body.Close()
-		if _, e = io.Copy(body, r.Body); e != nil {
+		n, copyErr := io.Copy(body, io.LimitReader(r.Body, 16*1024*1024+1))
+		if n > 16*1024*1024 {
+			http.Error(w, "request body too large", 413)
+			return
+		}
+		if copyErr != nil {
 			http.Error(w, "body read failed", 400)
 			return
 		}
 	}
 	token := ""
+	_, websocketMode := s.http.Transport.(*wsTransport)
 	var e error
-	if a != nil {
+	if a != nil && !websocketMode {
 		token, e = a.session(r.Context(), "")
 		if e != nil {
 			http.Error(w, "authentication failed", 502)
@@ -246,7 +252,7 @@ func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *au
 			body.Seek(0, 0)
 			q.Body = io.NopCloser(body)
 		}
-		if a != nil {
+		if a != nil && !websocketMode {
 			q.Header.Del("Authorization")
 			q.Header.Del("X-Goog-Api-Key")
 			q.Header.Set("Authorization", "Bearer "+token)
@@ -256,7 +262,7 @@ func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *au
 			http.Error(w, "upstream transport failed", 502)
 			return
 		}
-		if a != nil && resp.StatusCode == 401 && attempt == 0 {
+		if a != nil && !websocketMode && resp.StatusCode == 401 && attempt == 0 {
 			resp.Body.Close()
 			token, e = a.session(r.Context(), token)
 			if e != nil {
@@ -457,7 +463,10 @@ func run(args []string) int {
 	}()
 	ctx, cancel := context.WithTimeout(root, 30*time.Second)
 	debugPhase("auth_start")
-	_, e = a.session(ctx, "")
+	transport, e := newWSTransport(base, a.key)
+	if e == nil {
+		e = transport.Connect(ctx)
+	}
 	debugPhase("auth_end")
 	cancel()
 	if e != nil {
@@ -467,6 +476,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, e)
 		return 1
 	}
+	defer transport.Close()
 	ln, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start local proxy")
@@ -479,7 +489,9 @@ func run(args []string) int {
 		return 1
 	}
 	capability := base64.RawURLEncoding.EncodeToString(capBytes)
-	srv := &http.Server{Handler: &shim{a, client(), capability}, ReadHeaderTimeout: 15 * time.Second}
+	remote := client()
+	remote.Transport = transport
+	srv := &http.Server{Handler: &shim{a, remote, capability}, ReadHeaderTimeout: 15 * time.Second}
 	go srv.Serve(ln)
 	debugPhase("proxy_bound")
 	defer srv.Close()
