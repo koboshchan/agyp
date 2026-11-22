@@ -18,6 +18,7 @@ test('exact model quotas exclude unrelated empty pool and honor weekly shared wi
  const dir=mkdtempSync(join(tmpdir(),'agyp-')),s=new Store(dir),p=new Pool(s,'http://localhost','','');
  try{
  const buckets=parseQuota({buckets:[{model_id:'gemini-flash',remaining_fraction:1},{model_id:'gemini-pro',remaining_fraction:0}]});
+ assert.deepEqual(parseQuota({groups:[{displayName:'Models',modelIds:['gemini-flash'],buckets:[{remainingFraction:1}]}]})[0].models,['gemini-flash']);
  assert.deepEqual(buckets[0].models,['gemini-flash']);
  s.putAccount({id:'x',email:'x',refresh_token:'x',access_token:'x',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets,cooldowns:{},denied:{},updated:Date.now()});
  assert(p.select('gemini-flash'));assert(!p.select('gemini-pro'));

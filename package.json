@@ -12,7 +12,9 @@
     "dev": "tsx server/main.ts",
     "test": "tsx --test test/*.test.ts",
     "test:browser": "tsx test/browser.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:integration": "tsx test/integration-browser.ts",
+    "test:cli": "tsx test/cli-e2e.ts"
   },
   "dependencies": {
     "express": "^5.2.1",

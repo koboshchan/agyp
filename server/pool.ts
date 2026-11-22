@@ -13,8 +13,8 @@ export function parseQuota(p:any):Bucket[]{
    const label=[g.displayName??g.display_name,b.displayName??b.display_name,b.bucketId??b.bucket_id??b.model_id,b.window].filter(Boolean).join(' · ');
    const remaining=Number(b.remainingFraction??b.remaining_fraction??0);
    const explicit=b.modelId??b.model_id;
-   const models=Array.isArray(b.models)?b.models.filter((m:any)=>typeof m==='string'):typeof explicit==='string'?[explicit]:undefined;
-   out.push({family:family(label),label,remaining:Number.isFinite(remaining)?Math.min(1,Math.max(0,remaining)):0,reset:reset(b.resetTime??b.reset_time),disabled:!!b.disabled,models,shared:!models});
+   const models=Array.isArray(b.models??b.modelIds??b.model_ids??g.modelIds??g.model_ids)?(b.models??b.modelIds??b.model_ids??g.modelIds??g.model_ids).filter((m:any)=>typeof m==='string'):typeof explicit==='string'?[explicit]:undefined;
+   out.push({family:family(label+' '+(models??[]).join(' ')),label,remaining:Number.isFinite(remaining)?Math.min(1,Math.max(0,remaining)):0,reset:reset(b.resetTime??b.reset_time),disabled:!!b.disabled,models,shared:!models});
   }
  }
  return out;

@@ -49,6 +49,17 @@ test('single-port HTTP handshake RBAC CSRF replay exact proxy rotation streaming
  const ownMe=await(await call('/api/me',{headers:nh})).json() as any;assert.equal(ownMe.key.used.total,16);
  const accounts=await(await call('/api/accounts',{headers:ah})).text();assert(!accounts.includes('GOOGLE-REFRESH'));assert(!accounts.includes('google-a'));
  const small=store.createKey({name:'tiny',allowance:1}),sm=await login(small.token);assert.equal((await call('/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+sm.data.token,'content-type':'application/json'},body:reqBody})).status,429);
+ // Mixed envelopes cannot reduce the reservation below the forwarded generation limit.
+ const before=calls.length;
+ for(const b of [
+ {model:'gemini-4-argon-trial',generationConfig:{maxOutputTokens:1},request:{generationConfig:{candidateCount:1}}},
+ {model:'gemini-4-argon-trial',request:{generation_config:{max_output_tokens:1}}},
+ {model:'gemini-4-argon-trial',request:{generationConfig:{max_output_tokens:1}}},
+ ])assert.equal((await call('/v1internal:generateContent',{method:'POST',headers:nh,body:JSON.stringify(b)})).status,400);
+ assert.equal(calls.length,before);
+ const unbounded=store.createKey({name:'default-bound'}),un=await login(unbounded.token);
+ const defaulted=await call('/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+un.data.token,'content-type':'application/json'},body:JSON.stringify({model:'gemini-4-argon-trial',request:{contents:[]}})});assert.equal(defaulted.status,200);await defaulted.text();
+ assert.equal(JSON.parse(calls.at(-1).body).request.generationConfig.maxOutputTokens,65536);
  store.revoke(user.key.id);assert.equal((await call('/api/me',{headers:nh})).status,401);
  }finally{await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });

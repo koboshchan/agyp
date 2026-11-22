@@ -38,7 +38,7 @@ export class UsageReader {
 }
 export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Pool){
  if(!allowedProxy(req.method,req.originalUrl))throw Object.assign(new Error('Upstream action not allowed'),{status:403});
- const raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};if(raw.length){try{body=JSON.parse(raw.toString());}catch{throw Object.assign(new Error('Expected JSON body'),{status:400});}}
+ let raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};if(raw.length){try{body=JSON.parse(raw.toString());}catch{throw Object.assign(new Error('Expected JSON body'),{status:400});}}
  const model=extractModel(req.originalUrl,body);
  const generation=/:streamGenerateContent|:generateContent/.test(req.path);
  if(generation&&!model)throw Object.assign(new Error('Model is required'),{status:400});
@@ -46,11 +46,20 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
  const bounded=key.allowance!==null||key.inputCap!==null||key.outputCap!==null;
  if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
- const gc=body?.request?.generationConfig??body?.generationConfig??{};
- if(generation&&bounded&&((gc.candidateCount??1)!==1||(gc.candidate_count??1)!==1))throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
- const maxOutput=body?.request?.generationConfig?.maxOutputTokens??body?.generationConfig?.maxOutputTokens??65536;
+ const internal=req.path.startsWith('/v1internal:');
+ if(generation&&internal&&(!body.request||typeof body.request!=='object'||Array.isArray(body.request)))throw Object.assign(new Error('Internal generation requires request envelope'),{status:400});
+ if(generation&&internal&&(body.generationConfig!==undefined||body.generation_config!==undefined))throw Object.assign(new Error('Mixed generation envelopes are not allowed'),{status:400});
+ if(generation&&!internal&&body.request!==undefined)throw Object.assign(new Error('Unexpected nested request envelope'),{status:400});
+ const target=internal?body.request:body;
+ if(generation&&(target.generation_config!==undefined||target.generationConfig?.max_output_tokens!==undefined||target.generationConfig?.candidate_count!==undefined||target.generationConfig?.thinking_config!==undefined))throw Object.assign(new Error('Use canonical camelCase generation configuration'),{status:400});
+ const gc=target?.generationConfig??{};
+ if(generation&&(typeof gc!=='object'||Array.isArray(gc)))throw Object.assign(new Error('Invalid generation configuration'),{status:400});
+ if(generation&&bounded&&(gc.candidateCount??1)!==1)throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
+ const maxOutput=gc.maxOutputTokens??65536;
  if(generation&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>131072))throw Object.assign(new Error('maxOutputTokens must be 1..131072'),{status:400});
- if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??gc.thinking_config?.thinking_budget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
+ if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
+ // Always forward exactly the canonical bound used by admission, including its default.
+ if(generation){target.generationConfig={...gc,maxOutputTokens:maxOutput};raw=Buffer.from(JSON.stringify(body));}
  const input=generation?raw.length+1024:0,output=generation?maxOutput:0;
  const reservation=store.reserve(key,model||'(control)',input,output);
  let final:Usage|undefined,status=502,started=false;
