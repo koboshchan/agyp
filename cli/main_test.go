@@ -407,3 +407,22 @@ func TestCapabilityEnvironment(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionWithoutCredentials(t *testing.T) {
+	t.Setenv("AGYP_BASE", "")
+	t.Setenv("AGYP_TOKEN", "")
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	code := run([]string{"--version"})
+	w.Close()
+	output, err := io.ReadAll(r)
+	r.Close()
+	if err != nil || code != 0 || string(output) != "agyp "+version+"\n" {
+		t.Fatalf("version result code=%d output=%q err=%v", code, output, err)
+	}
+}

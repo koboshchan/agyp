@@ -27,6 +27,9 @@ import (
 	"time"
 )
 
+// version is set from the release tag at build time.
+var version = "dev"
+
 var keyPattern = regexp.MustCompile(`^agyp_([0-9a-fA-F]{16})\.[A-Za-z0-9_-]+$`)
 var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
@@ -349,6 +352,10 @@ func childEnv(env []string, addr, capability string) []string {
 	return append(out, "CLOUD_CODE_URL="+addr+"/"+capability, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, "NO_PROXY=localhost,127.0.0.1,::1,speech.googleapis.com", "no_proxy=localhost,127.0.0.1,::1,speech.googleapis.com")
 }
 func run(args []string) int {
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Fprintln(os.Stdout, "agyp "+version)
+		return 0
+	}
 	if len(args) > 0 && args[0] == "--" {
 		args = args[1:]
 	}

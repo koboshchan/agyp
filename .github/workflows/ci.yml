@@ -74,7 +74,7 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           mkdir -p staging artifacts
-          (cd cli && go build -trimpath -ldflags='-s -w' -o ../staging/agyp .)
+          (cd cli && go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o ../staging/agyp .)
           cp LICENSE THIRD_PARTY_NOTICES README.md staging/
           tar -czf "artifacts/agyp-${GOOS}-${GOARCH}.tar.gz" -C staging .
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
