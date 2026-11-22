@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'n
 import { join } from 'node:path';
 
 export type Key = {id:string; name:string; token:string; admin:number; revoked:number; expires:number|null; allowance:number|null; inputCap:number|null; outputCap:number|null; period:string; created:number};
-export type Account = {id:string; email:string; refresh_token:string; access_token:string; token_expiry:number; status:string; shared:boolean; blocked:boolean; buckets:any[]; cooldowns:Record<string,number>; denied:Record<string,number>; updated:number};
+export type Account = {id:string; email:string; refresh_token:string; access_token:string; token_expiry:number; status:string; shared:boolean; blocked:boolean; buckets:any[]; cooldowns:Record<string,number>; denied:Record<string,number>; updated:number; verification?:{url:string;observedAt:number}};
 export type Usage = {input:number; output:number; cached:number; total:number};
 export const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
 export const secret=()=>randomBytes(32).toString('base64url');
