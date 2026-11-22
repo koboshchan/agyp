@@ -156,7 +156,7 @@ test('every generation admission 400 has bounded value-free local diagnostics an
   ['noncanonical_config',body({...valid,request:{generation_config:{}}}),internal],
   ...['max_output_tokens','candidate_count','thinking_config'].map(k=>['noncanonical_config',body({...valid,request:{generationConfig:{[k]:1}}}),internal] as [string,string,string]),
   ...[[],1,'CANARY_CONFIG',true].map(generationConfig=>['invalid_config',body({...valid,request:{generationConfig}}),internal] as [string,string,string]),
-  ...[0,-1,131073,1.5,'CANARY_BOUND',false,{}].map(maxOutputTokens=>['invalid_output_bound',body({...valid,request:{generationConfig:{maxOutputTokens}}}),internal] as [string,string,string]),
+  ...[0,-1,2147483648,Number.MAX_SAFE_INTEGER+1,1.5,'CANARY_BOUND',false,{}].map(maxOutputTokens=>['invalid_output_bound',body({...valid,request:{generationConfig:{maxOutputTokens}}}),internal] as [string,string,string]),
  ];
  try{
   await p.auth(key.token);await q.auth(bounded.token);
@@ -191,4 +191,37 @@ test('local diagnostics sanitizer cannot retain arbitrary keys, values, URLs, qu
  records[0].shape.fields.push({field:'CANARY_MUTATION',type:'CANARY_TYPE'});assert.doesNotMatch(JSON.stringify(diagnostics.snapshot()),/CANARY/);
  assert.equal(admissionShape(Buffer.alloc(16*1024*1024+1)).truncated,true);
  assert.equal(diagnostics.record('POST','/v1internal:generateContent',raw,'CANARY_REASON' as any),undefined);
+});
+
+test('output-bound schema and bounded-key reservation ceiling stay distinct over authenticated WSS',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-output-policy-')),store=new Store(dir);let calls=0,rawSeen='',reject=false,missingUsage=false;
+ const upstream=createServer(async(req,res)=>{calls++;rawSeen='';for await(const c of req)rawSeen+=c;res.setHeader('content-type','application/json');if(reject){res.writeHead(400).end('{"error":{"message":"CANARY_UPSTREAM_VALUE"}}');return;}res.end(missingUsage?'{}':'{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}');});
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app,pool}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
+ store.putAccount({id:'a',email:'fake@example.invalid',refresh_token:'fake',access_token:'fake',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
+ const defs=[{}, {allowance:1e7}, {inputCap:1e7}, {outputCap:1e7}, {allowance:0},{outputCap:0},{inputCap:0}, {allowance:1e7,inputCap:1e7}, {allowance:1e7,outputCap:1e7}, {inputCap:1e7,outputCap:1e7}, {allowance:1e7,inputCap:1e7,outputCap:1e7}, {allowance:1e7,period:'daily'}, {period:'daily'}];
+ const peers:Peer[]=[];let id=0;
+ const paths=['/v1internal:streamGenerateContent','/v1internal:generateContent','/v1/models/gemini-flash:generateContent','/v1/models/gemini-flash:streamGenerateContent'];
+ const makeRaw=(value:any,internal:boolean)=>{const request={contents:[{parts:[{text:'SYNTHETIC_ONLY'}]}],generationConfig:{maxOutputTokens:value}};return JSON.stringify(internal?{model:'gemini-flash',request}:request);};
+ const reservations=()=>Number((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n);
+ try{
+  for(const [i,def] of defs.entries()){
+   const key=store.createKey({name:'policy-'+i,...def}),p=new Peer(config.origin);peers.push(p);await p.auth(key.token);
+   for(const path of paths)for(const value of [0,-1,1.5,131073,2147483647,2147483648,Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER+1,'131073',false,{},null]){
+    const before=calls,used={...store.used(key.key)},raw=makeRaw(value,path.startsWith('/v1internal'));
+    start(p,++id,raw,path);const r=await result(p);
+    const accepted=(i===0||i===defs.length-1)&&typeof value==='number'&&Number.isInteger(value)&&value>=1&&value<=2147483647;
+    assert.equal(r.status,accepted?200:400,JSON.stringify({i,value,path}));
+    assert.equal(calls,before+(accepted?1:0));assert.equal(reservations(),0);
+    if(accepted){assert.equal(rawSeen,raw);assert.equal(store.used(key.key).total,used.total+3);}
+    else assert.deepEqual({...store.used(key.key)},used);
+   }
+  }
+  const bounded=store.createKey({name:'bounded-boundary',allowance:1e7}),q=new Peer(config.origin);peers.push(q);await q.auth(bounded.token);
+  for(const value of [1,131072]){const raw=makeRaw(value,true);start(q,++id,raw);assert.equal((await result(q)).status,200);assert.equal(rawSeen,raw);}
+  const capped=store.createKey({name:'cap-enforcement',outputCap:4}),c=new Peer(config.origin);peers.push(c);await c.auth(capped.token);const beforeCap=calls;
+  start(c,++id,makeRaw(5,true));assert.equal((await result(c)).status,429);assert.equal(calls,beforeCap);assert.equal(store.used(capped.key).total,0);
+  const unlimited=store.createKey({name:'upstream-validation'}),p=new Peer(config.origin);peers.push(p);await p.auth(unlimited.token);
+  reject=true;const raw=makeRaw(2147483647,true);start(p,++id,raw,'/v1internal:streamGenerateContent');let r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Upstream request rejected/);assert.doesNotMatch(r.body,/CANARY/);assert.equal(rawSeen,raw);assert.equal(store.used(unlimited.key).total,0);assert.equal(reservations(),0);
+  reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,2147483647);assert.equal(store.used(unlimited.key).input,Buffer.byteLength(raw)+1024);assert.equal(reservations(),0);
+ }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
