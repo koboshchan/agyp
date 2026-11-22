@@ -241,7 +241,11 @@ const addAccount=()=>act(async()=>{
 
     {admin&&<section id="keys-view" hidden={view!=='keys'} className="space-y-4">
      <div className="flex items-center justify-between gap-3"><p className="text-muted-foreground">A separate key for every person, tool, or project.</p><Button id="add-key" onClick={()=>setKeyOpen(true)} className="rounded-full"><Plus className="size-4"/>Create key</Button></div>
-     <Card className="rounded-2xl"><CardContent className="px-0"><div id="keys"><Grid data={keys} columns={keyCols} empty="No access keys yet."/></div></CardContent></Card>
+     <Card className="rounded-2xl"><CardContent className="px-0"><div id="keys"><Grid data={keys.filter(k=>!k.revoked)} columns={keyCols} empty="No access keys yet."/></div></CardContent></Card>
+     <details id="deleted-keys" className="rounded-2xl border bg-card">
+      <summary className="cursor-pointer px-5 py-4 text-sm font-medium focus-visible:outline focus-visible:outline-2">Deleted keys ({keys.filter(k=>k.revoked).length})</summary>
+      <Grid data={keys.filter(k=>k.revoked)} columns={keyCols} empty="No deleted keys."/>
+     </details>
     </section>}
    </main>
   </div>}

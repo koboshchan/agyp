@@ -71,7 +71,7 @@ try {
     let body: object={};
     if (path==='/api/me') body={key:{...key,admin},csrf:'csrf-test',sessionExpires:Date.now()+expiry};
     else if(path==='/api/stats') body={models:[{key_id:key.id,model:'<img src=x onerror=alert(1)>',input:20000,output:5000,cached:10000,noncached:10000,total:25000,requests:4}],graph:[{day:'2026-11-21',input:20000,output:5000,cached:10000}]};
-    else if(path==='/api/keys') body=req.method()==='POST'?{key,token:'agyp_1123456789abcdef.new-secret'}:{keys:[key]};
+    else if(path==='/api/keys') body=req.method()==='POST'?{key,token:'agyp_1123456789abcdef.new-secret'}:{keys:[key,{...key,id:"fedcba9876543210",name:"Archived fixture",admin:false,revoked:1}]};
     else if(path==='/api/keys/'+key.id+'/revoke') { revoked=true; }
     else if(path==='/api/keys/'+key.id && req.method()==='DELETE') { deleted=true; }
     else if(path==='/api/accounts/acct/toggle') { toggled=true; accountStatus=accountStatus==='ready'?'disabled':'ready'; }
@@ -99,7 +99,16 @@ try {
   assert.equal(await page.locator('#models img').count(),0);
   assert.ok(await page.locator('#chart svg').count()>=1);
   await screenshot('admin-overview');
-  await page.locator('[data-view=keys]:visible').first().click();await screenshot('admin-keys');await page.click('#add-key');await page.fill('#key-name','New key');
+  await page.locator('[data-view=keys]:visible').first().click();await screenshot('admin-keys');
+  await expect(page.locator('#keys')).not.toContainText('Archived fixture');
+  await expect(page.locator('#deleted-keys')).not.toHaveAttribute('open');
+  await expect(page.locator('#deleted-keys summary')).toHaveText('Deleted keys (1)');
+  await page.locator('#deleted-keys summary').focus();await page.keyboard.press('Enter');
+  await expect(page.locator('#deleted-keys')).toHaveAttribute('open','');
+  await expect(page.locator('#deleted-keys')).toContainText('Archived fixture');
+  await expect(page.locator('#deleted-keys')).toContainText('25,000');
+  await screenshot('deleted-keys');
+  await page.locator('#deleted-keys summary').click();await page.click('#add-key');await page.fill('#key-name','New key');
   await page.click('#key-form button[type=submit]');await page.locator('#secret-dialog').waitFor({state:'visible'});
   assert.match(await page.inputValue('#new-secret'),/new-secret/);
   await page.locator('#secret-dialog').getByRole('button',{name:'Close',exact:true}).click();assert.equal(await page.inputValue('#new-secret'),'');
