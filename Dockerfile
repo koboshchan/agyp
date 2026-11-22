@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim AS build
+FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -6,19 +6,19 @@ COPY tsconfig.json ./
 COPY server ./server
 RUN npm run build
 
-FROM node:24-bookworm-slim AS web-build
+FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS web-build
 WORKDIR /app/ui
 COPY ui/package.json ui/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY ui ./
 RUN mkdir -p /app/web && npm run build
 
-FROM node:24-bookworm-slim AS production-deps
+FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS production-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
-FROM node:24-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS runtime
 ENV NODE_ENV=production PORT=54873 DATA_DIR=/app/data
 WORKDIR /app
 COPY --from=production-deps --chown=node:node /app/node_modules ./node_modules
