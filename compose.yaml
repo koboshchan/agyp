@@ -1,0 +1,40 @@
+name: agyp
+services:
+  agyp:
+    container_name: agyp
+    build: .
+    image: agyp:local
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "54873"
+      DATA_DIR: /app/data
+    expose:
+      - "54873"
+    volumes:
+      - data:/app/data
+    networks:
+      - oneserver_bridge
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+volumes:
+  data:
+    name: agyp_data
+networks:
+  oneserver_bridge:
+    external: true
