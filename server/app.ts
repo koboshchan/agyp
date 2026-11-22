@@ -34,6 +34,8 @@ export function createApp(store:Store,config:Config){
  });
  // The login shell and its static assets are deliberately unauthenticated; all data requires a session.
  app.get('/',(_req,res)=>res.sendFile(resolve('web/index.html')));
+ app.get('/app.js',(_req,res)=>res.sendFile(resolve('web/app.js')));
+ app.get('/style.css',(_req,res)=>res.sendFile(resolve('web/style.css')));
  app.use('/assets',express.static(resolve('web'),{index:false,dotfiles:'deny',fallthrough:true,redirect:false}));
  app.get('/assets/chart.js',(_req,res)=>res.sendFile(resolve('node_modules/chart.js/dist/chart.umd.js')));
  const auth=(req:Request,res:Response,next:NextFunction)=>{

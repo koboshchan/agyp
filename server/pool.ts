@@ -1,7 +1,7 @@
 import {OAuth2Client} from 'google-auth-library';
 import {Store,type Account} from './store.js';
 
-export type Bucket={family:string;label:string;remaining:number;reset:number;disabled:boolean};
+export type Bucket={family:string;label:string;remaining:number;reset:number;disabled:boolean;models?:string[];shared?:boolean};
 export const UA='antigravity/hub/2.23.0 linux/amd64';
 export function family(model:string){const m=model.toLowerCase();return m.includes('argon')?'argon':/claude|gpt|3p/.test(m)?'claude':/gemini|gemma/.test(m)?'gemini':'unknown';}
 export function requiresUltra(model:string){return /carbon/.test(model.toLowerCase())||(/argon/.test(model.toLowerCase())&&!/trial/.test(model.toLowerCase()));}
@@ -12,7 +12,9 @@ export function parseQuota(p:any):Bucket[]{
   for(const b of g.buckets??[]){
    const label=[g.displayName??g.display_name,b.displayName??b.display_name,b.bucketId??b.bucket_id??b.model_id,b.window].filter(Boolean).join(' · ');
    const remaining=Number(b.remainingFraction??b.remaining_fraction??0);
-   out.push({family:family(label),label,remaining:Number.isFinite(remaining)?Math.min(1,Math.max(0,remaining)):0,reset:reset(b.resetTime??b.reset_time),disabled:!!b.disabled});
+   const explicit=b.modelId??b.model_id;
+   const models=Array.isArray(b.models)?b.models.filter((m:any)=>typeof m==='string'):typeof explicit==='string'?[explicit]:undefined;
+   out.push({family:family(label),label,remaining:Number.isFinite(remaining)?Math.min(1,Math.max(0,remaining)):0,reset:reset(b.resetTime??b.reset_time),disabled:!!b.disabled,models,shared:!models});
   }
  }
  return out;
@@ -53,7 +55,7 @@ export class Pool {
   const f=family(model),now=Date.now();
   if(a.status!=='ready'||a.blocked||(a.cooldowns[f]??0)>now||(a.denied[model]??0)>now)return false;
   if(requiresUltra(model)&&!a.shared)return false;
-  const q=a.buckets.filter(b=>b.family===(requiresUltra(model)?'gemini':f));
+  const q=a.buckets.filter(b=>b.family===(requiresUltra(model)?'gemini':f)&&(!b.models?.length||b.models.includes(model.replace(/^models\//,''))));
   if(f==='unknown')return true;
   return q.length>0&&q.every(b=>!b.disabled&&(b.remaining>0||(b.reset>0&&b.reset<=now)));
  }
@@ -64,7 +66,7 @@ export class Pool {
  }
  failed(id:string,model:string,status:number,text:string){
   const a=this.store.accounts().find(a=>a.id===id);if(!a)return false;let retry=false;const now=Date.now(),f=family(model);
-  if(status===429){a.cooldowns[f]=Math.max(now+300_000,...a.buckets.filter(b=>b.family===f&&b.remaining<=0).map(b=>b.reset));retry=true;}
+  if(status===429){a.cooldowns[f]=Math.max(now+300_000,...a.buckets.filter(b=>(b.family===(requiresUltra(model)?'gemini':f))&&(!b.models?.length||b.models.includes(model))&&b.remaining<=0).map(b=>b.reset));retry=true;}
   else if(status===403&&/subscription_required|subscription required/i.test(text)){a.denied[model]=now+1800_000;retry=true;}
   else if(status===403&&/quota|resource_exhausted/i.test(text)){a.blocked=true;retry=true;}
   else if(status===401){if(a.status!=='disabled')a.status='auth_error';retry=true;}

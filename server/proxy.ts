@@ -5,6 +5,16 @@ import {Store,type Key,type Usage} from './store.js';
 import {once} from 'node:events';
 
 const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie']);
+export function allowedProxy(method:string,path:string){
+ const p=new URL(path,'http://local').pathname;
+ return (method==='POST'&&/^\/v1internal:(generateContent|streamGenerateContent|countTokens|fetchAvailableModels)$/.test(p))
+ ||(method==='POST'&&/^\/v1(?:beta)?\/models\/[^/:]+:(generateContent|streamGenerateContent|countTokens)$/.test(p))
+ ||(method==='GET'&&/^\/v1(?:beta)?\/models(?:\/[^/:]+)?$/.test(p));
+}
+export function hasMedia(value:any):boolean{
+ if(!value||typeof value!=='object')return false;
+ return Object.entries(value).some(([key,v])=>['inlineData','fileData','inline_data','file_data'].includes(key)||hasMedia(v));
+}
 export function extractModel(path:string,body:any){
  const byPath=/\/models\/([^/:?]+)/.exec(path)?.[1];
  const byBody=typeof body?.model==='string'?body.model:undefined;
@@ -27,6 +37,7 @@ export class UsageReader {
  end(){const s=this.decoder.decode();if(this.sse)this.parser.feed(s);else{this.json+=s;try{this.observe(JSON.parse(this.json));}catch{}}}
 }
 export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Pool){
+ if(!allowedProxy(req.method,req.originalUrl))throw Object.assign(new Error('Upstream action not allowed'),{status:403});
  const raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};if(raw.length){try{body=JSON.parse(raw.toString());}catch{throw Object.assign(new Error('Expected JSON body'),{status:400});}}
  const model=extractModel(req.originalUrl,body);
  const generation=/:streamGenerateContent|:generateContent/.test(req.path);
@@ -34,7 +45,7 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  // Reserve a conservative upper bound before starting. byte length bounds text tokens;
  // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
  const bounded=key.allowance!==null||key.inputCap!==null||key.outputCap!==null;
- if(generation&&bounded&&/"(?:inlineData|fileData|inline_data|file_data)"/.test(raw.toString()))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
+ if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
  const maxOutput=body?.request?.generationConfig?.maxOutputTokens??body?.generationConfig?.maxOutputTokens??65536;
  if(generation&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>131072))throw Object.assign(new Error('maxOutputTokens must be 1..131072'),{status:400});
  const input=generation?raw.length+1024:0,output=generation?maxOutput:0;
