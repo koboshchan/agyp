@@ -6,6 +6,13 @@ COPY tsconfig.json ./
 COPY server ./server
 RUN npm run build
 
+FROM node:24-bookworm-slim AS web-build
+WORKDIR /app/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY ui ./
+RUN mkdir -p /app/web && npm run build
+
 FROM node:24-bookworm-slim AS production-deps
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -17,7 +24,7 @@ WORKDIR /app
 COPY --from=production-deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --from=build --chown=node:node /app/dist ./dist
-COPY --chown=node:node web ./web
+COPY --from=web-build --chown=node:node /app/web ./web
 RUN install -d -m 0700 -o node -g node /app/data
 USER node
 EXPOSE 54873

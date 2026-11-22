@@ -6,3 +6,5 @@ data/
 cli/agyp
 artifacts/
 playwright-report/
+web/
+ui/node_modules/
