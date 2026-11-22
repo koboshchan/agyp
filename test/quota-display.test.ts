@@ -100,3 +100,17 @@ test('model quotaInfo retains sanitized unknown non-quota metadata while replaci
   assert.deepEqual(out.models['gemini-4-hydrogen'].quotaInfo,{additionalInfo:{capability:true},description:'retained',remainingFraction:0.4,...(reset?{resetTime:reset}:{})});
  }
 });
+
+test('opposite-period full applies only to eligible Gemini even at zero balance',async()=>{
+ const {mapLegacyQuota}=await import('../server/quota-display.js');
+ for(const period of ['5h','weekly'])for(const fraction of [0,0.5,1])for(const capped of [true,false]){
+  const q={period,fraction,capped},windows=['5h','weekly'];
+  const names=['Gemini Models','Claude Models','GPT Models','Argon Models'];
+  const summary=mapQuotaSummary({groups:names.map(displayName=>({displayName,buckets:windows.map(window=>({window}))}))},q) as any;
+  for(const [i,g]of summary.groups.entries())for(const [j,b]of g.buckets.entries())assert.equal(b.remainingFraction,!capped?1:i!==0?0:windows[j]===period?fraction:1);
+  for(const [i,modelId]of ['gemini-flash','claude-sonnet','gpt-5','argon'].entries()){
+   const legacy=mapLegacyQuota({buckets:windows.map(window=>({modelId,window}))},q) as any;
+   for(const [j,b]of legacy.buckets.entries())assert.equal(b.remainingFraction,!capped?1:i!==0?0:windows[j]===period?fraction:1);
+  }
+ }
+});

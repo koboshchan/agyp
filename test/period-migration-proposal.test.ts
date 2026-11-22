@@ -23,3 +23,21 @@ test('offline migration refuses duplicates, altered caps and usage snapshots ato
   s.createKey({name:'makieify',period:'daily',allowance:10000000});assert.throws(()=>proposedPeriodMigration(s,now),/exactly one/);assert.equal(s.key(a.id)!.period,'daily');
  }finally{s.close();rmSync(dir,{recursive:true,force:true})}
 });
+
+test('migration fingerprints expiry and rejects expiry reached at apply atomically',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-expiry-')),s=new Store(dir),now=Date.parse('2026-11-22T06:00Z');
+ try{
+  const k=s.createKey({name:'makieify',period:'daily',allowance:10000000,expires:now+1000}).key;
+  const plan=proposedPeriodMigration(s,now);
+  s.db.prepare('UPDATE keys SET expires=? WHERE id=?').run(now+2000,k.id);
+  assert.throws(()=>applyApprovedPeriodMigration(s,plan,now),/snapshot changed/);
+  s.db.prepare('UPDATE keys SET expires=? WHERE id=?').run(now+1000,k.id);
+  assert.throws(()=>applyApprovedPeriodMigration(s,plan,now+1000),/expired/);
+  assert.throws(()=>proposedPeriodMigration(s,now+1000),/configuration/);
+  assert.equal(s.key(k.id)!.period,'daily');assert.equal(s.key(k.id)!.allowance,10000000);
+  assert.equal(s.db.prepare('SELECT 1 FROM key_windows WHERE key_id=?').get(k.id),undefined);
+  assert.equal(applyApprovedPeriodMigration(s,plan,now),'applied');
+  s.db.prepare('UPDATE keys SET expires=? WHERE id=?').run(now+2000,k.id);
+  assert.throws(()=>applyApprovedPeriodMigration(s,plan,now));
+ }finally{s.close();rmSync(dir,{recursive:true,force:true})}
+});

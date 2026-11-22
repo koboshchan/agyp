@@ -13,6 +13,11 @@ test('postdeploy test keys are separately gated, atomic, 50% with own reset/oppo
    const out=mapQuotaSummary({groups:[{displayName:'Gemini Models',buckets:[{window:'5h'},{window:'weekly'}]}]},q);
    assert.equal(out.groups[0].buckets[0].remainingFraction,name==='test-5h-half'?0.5:1);assert.equal(out.groups[0].buckets[1].remainingFraction,name==='test-weekly-half'?0.5:1);
    assert.throws(()=>createPostdeployTestKey(s,name,gate),/Duplicate/);assert.equal((s.stats(k.id).models as any[])[0].requests,1);
+   s.deleteKey(k.id);assert.equal(s.key(k.id)!.name,'Deleted key');
+   const before=JSON.stringify(s.db.prepare('SELECT * FROM keys').all());
+   assert.throws(()=>createPostdeployTestKey(s,name,gate),/Duplicate/);
+   assert.equal(JSON.stringify(s.db.prepare('SELECT * FROM keys').all()),before);
+   assert.equal((s.stats(k.id).models as any[])[0].requests,1);
   }
   assert.equal(s.key(old.id)!.revoked,1);assert.equal(s.key(old.id)!.name,'Deleted key');
  }finally{s.close();rmSync(dir,{recursive:true,force:true})}

@@ -86,3 +86,5 @@ is mandatory for generation. Label control records separately, preserve their co
 and tokens rather than silently dropping history. Fresh read-only investigation at
 05:42:48Z saw 713 control records, zero tokens, 711 status200 and two502; do not infer
 specific endpoint identities from this sentinel. Tests use fake upstreams only.
+
+Review correction. Exact old-state snapshot includes expiry and non-secret key configuration. Apply rejects expired targets under its IMMEDIATE transaction, including expiry reached after proposal. Postdeploy test creation records a durable per-name execution marker and key id in the existing settings table in the same transaction, so soft-delete renaming cannot enable recreation. No schema changes are needed. Opposite-period full bars apply only to eligible Gemini, never overriding capped Claude/GPT/Argon zero restrictions.
