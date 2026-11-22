@@ -1,3 +1,4 @@
+import {parse as parseLossless,isLosslessNumber,compareNumber} from 'lossless-json';
 import type {Request,Response} from 'express';
 import {createParser} from 'eventsource-parser';
 import {Pool,family} from './pool.js';
@@ -78,10 +79,19 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  if(generation&&bounded&&(gc.candidateCount??1)!==1)throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
  if(generation&&bounded&&gc.maxOutputTokens===undefined)throw Object.assign(new Error('Bounded keys require explicit generationConfig.maxOutputTokens'),{status:422});
  const maxOutput=gc.maxOutputTokens??0;
- // The reservation ceiling is a bounded-key policy, not a Google schema limit.
- // Uncapped keys forward positive int32 values verbatim; Google validates model limits.
- const outputCeiling=bounded?131072:2147483647;
+ // Uniform admission policy for every key; reservations still enforce each key's caps.
+ // Google remains responsible for model-specific limits. Forward raw bytes unchanged.
+ const outputCeiling=1000000;
  if(generation&&gc.maxOutputTokens!==undefined&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>outputCeiling))throw admissionError('invalid_output_bound','maxOutputTokens outside supported range');
+ // JSON.parse rounds decimal literals before validation. Inspect the actual JSON
+ // number at the same canonical path; never rewrite forwarded bytes. The parser
+ // rejects conflicting duplicate keys, so last-key selection cannot hide a bound.
+ if(generation){
+  let exact:any;try{exact=parseLossless(raw.toString());}catch{throw admissionError('invalid_json','Expected unambiguous JSON body');}
+  const literal=(internal?exact.request:exact)?.generationConfig?.maxOutputTokens;
+  if(gc.maxOutputTokens!==undefined&&(!isLosslessNumber(literal)||compareNumber(literal.value,String(maxOutput))!==0))
+   throw admissionError('invalid_output_bound','maxOutputTokens outside supported range');
+ }
  if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
  // Do not mutate generation JSON. Unlimited requests may omit output bounds.
  // Missing usage remains conservatively charged for bounded keys.

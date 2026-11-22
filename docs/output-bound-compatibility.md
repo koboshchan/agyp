@@ -1,6 +1,6 @@
-# Candidate uncapped-key output-bound compatibility change
+# Uniform exact-integer output-bound policy
 
-This is a candidate policy compatibility fix, NOT a proven fix for Lucas's
+This is the explicitly requested uniform 1..1000000 admission policy, NOT a proven fix for Lucas's
 request. No deployment, activation, prompts, session access or upstream generation
 is part of this change. Independent exact-SHA review and fresh communicated
 approval are required before deployment or a real manual verification request.
@@ -32,8 +32,8 @@ https://docs.cloud.google.com/vertex-ai/generative-ai/docs/reference/rest/v1beta
 These sources establish signed int32 representation, not a universal legal model
 maximum. They do NOT document a universal negative sentinel, fractional value, or
 a universal positive minimum. The existing positive-only local policy remains
-unchanged. Accepting positive int32 values up to 2147483647 at the proxy does NOT
-claim that every model accepts that value. Google remains the authority on
+unchanged. The requested local maximum is now uniformly 1000000, not signed-int32 max.
+Admitting a bound at this ceiling does NOT claim that every model accepts it. Google remains the authority on
 model-specific validation. No positive-minimum claim is inferred from int32.
 
 ## Offline matching-version construction evidence
@@ -95,19 +95,35 @@ Reproducible local evidence (outside the repo, not a production mount):
 
 ## Exact code scope
 
-Only the maximum-output admission ceiling is conditional. A completely uncapped
-key has allowance === null AND inputCap === null AND outputCap === null.
-Store.Key and the keys SQL schema contain no separate totalCap: allowance is the
-total input+output cap, enforced in Store.reserve. Non-null zero counts as a cap.
-The period/reset policy does not determine whether a key is capped.
+Every explicit canonical generationConfig.maxOutputTokens must be a mathematical
+positive integer in 1..1000000, regardless of key type or reset period. This
+supersedes the earlier proposed uncapped-int32 exception and the old bounded
+131072 ceiling. Neither exception remains in the code.
 
-For uncapped keys, explicit output bounds must still be safe positive integers,
-now at most 2147483647 (signed int32 maximum). For any capped key, the prior
-1..131072 ceiling remains. Raw request bytes are never rewritten, clamped,
-rounded, normalized, or given a fabricated sentinel. Missing output bounds retain
-existing behavior. Zero, negatives, fractions, overflow, strings and other JSON
-types remain rejected. All other shape/envelope/auth/host/SSRF/media/candidate/
-thinking/admission and reservation rules are unchanged.
+All allowance, inputCap and outputCap admission/reservation checks remain active.
+Store.Key and SQL have no separate totalCap: allowance is the input+output cap.
+Non-null zero counts as a cap. Bounded keys still require an explicit output
+bound, one candidate and text-only requests; the thinking budget still cannot
+exceed the reserved output. A valid 1000000 bound can still receive quota rejection
+when its key lacks sufficient remaining budget. Missing bounds retain existing
+behavior for unlimited keys. The raw request is never rewritten or clamped.
+
+A pinned lossless-json 4.3.4 parse inspects the same canonical output field without
+conversion. Its exact decimal comparison must equal the already range-checked
+JavaScript integer. Thus exponent/fraction forms that are mathematical integers
+remain valid, but rounded near-integers cannot pass. The parser rejects conflicting
+duplicate members, including escaped names and envelope/config duplicates;
+identical duplicate members are unambiguous and remain accepted. Parser errors
+are mapped to a fixed admission error, never its value-bearing error text.
+Unrelated fields retain their original raw spelling.
+
+Library research used the maintained upstream README/API and installed source,
+since chub searches had no matching documentation entry:
+https://github.com/josdejong/lossless-json
+
+Zero, negatives, mathematically fractional numbers, values over 1000000, overflow,
+strings and other JSON types are rejected. All other auth/host/SSRF/media/
+candidate/thinking admission and reservation rules remain unchanged.
 
 Upstream model rejection remains a sanitized upstream rejection. Successful
 usage remains accounted normally; missing upstream usage conservatively falls
@@ -116,13 +132,21 @@ No bypass of bounded-key accounting or any collection controls is introduced.
 
 ## Verification and remaining decision
 
-Authenticated synthetic WSS regressions exercise internal nested generate/stream
-paths and canonical model generate/stream paths, all three individual caps,
-zero caps, pairwise/all cap combinations, reset-period independence, and numeric
-edge cases including 2147483647/2147483648 and safe-integer overflow. They verify
-unchanged bytes, exact actual usage, conservative missing-usage fallback,
-upstream 400 sanitization, rejection before upstream with zero charge, reservation
-cleanup, and unchanged quota exhaustion.
+Authenticated synthetic WSS regressions exercise all four canonical internal/
+model generate/stream paths. The cap matrix covers all 27 combinations of absent,
+zero and positive allowance/inputCap/outputCap across never/daily/weekly/monthly
+periods. They verify 1/1000000 admission as budgets permit, quota exhaustion,
+1000001 rejection, exact byte preservation, actual usage and conservative
+missing-usage fallback, upstream 400 sanitization, and zero charges/reservations
+after rejected requests.
+
+Raw-literal cases include the review's 2147483647.0000001,
+2147483646.99999999, 131073.000000000001, former-ceiling
+131072.000000000001, new-ceiling 1000000.00000000001,
+999999.99999999999 and lower-bound 0.99999999999999999. Exponents,
+huge exponents, long fractional tails, escaped member names, duplicate
+output/config/envelope keys, numeric-object impersonation, prototype keys and
+unrelated nested numbers/strings are covered too.
 
 Next, obtain independent review of this exact commit. Present it explicitly as a
 candidate, including the unresolved actual numeric subcondition. After fresh
@@ -140,4 +164,6 @@ image/config, with diagnostic deadline override absent. No data migration.
 Validation on the candidate passed all 54 TypeScript tests, TypeScript check and
 build, Go race tests, vet and build, and npm run test:cli (real Go CLI against
 synthetic local upstream only). Logs are local under
-/home/kit/agyp-offline-shape/output-policy-full.log.
+/home/kit/agyp-offline-shape/output-policy-1m-full.log.
+Actual Docker build/smoke and independent exact-SHA review remain required
+before the authorized agyp-only deployment. No worker may issue real prompts.

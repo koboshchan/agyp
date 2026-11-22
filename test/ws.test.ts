@@ -193,7 +193,7 @@ test('local diagnostics sanitizer cannot retain arbitrary keys, values, URLs, qu
  assert.equal(diagnostics.record('POST','/v1internal:generateContent',raw,'CANARY_REASON' as any),undefined);
 });
 
-test('output-bound schema and bounded-key reservation ceiling stay distinct over authenticated WSS',async()=>{
+test('uniform exact one-million output ceiling preserves every key budget over authenticated WSS',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'agyp-output-policy-')),store=new Store(dir);let calls=0,rawSeen='',reject=false,missingUsage=false;
  const upstream=createServer(async(req,res)=>{calls++;rawSeen='';for await(const c of req)rawSeen+=c;res.setHeader('content-type','application/json');if(reject){res.writeHead(400).end('{"error":{"message":"CANARY_UPSTREAM_VALUE"}}');return;}res.end(missingUsage?'{}':'{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}');});
  const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app,pool}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
@@ -206,22 +206,96 @@ test('output-bound schema and bounded-key reservation ceiling stay distinct over
  try{
   for(const [i,def] of defs.entries()){
    const key=store.createKey({name:'policy-'+i,...def}),p=new Peer(config.origin);peers.push(p);await p.auth(key.token);
-   for(const path of paths)for(const value of [0,-1,1.5,131073,2147483647,2147483648,Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER+1,'131073',false,{},null]){
+   for(const path of paths)for(const value of [0,-1,1.5,1,131073,1000000,1000001,2147483647,2147483648,Number.MAX_SAFE_INTEGER,Number.MAX_SAFE_INTEGER+1,'1000000',false,{},null]){
     const before=calls,used={...store.used(key.key)},raw=makeRaw(value,path.startsWith('/v1internal'));
     start(p,++id,raw,path);const r=await result(p);
-    const accepted=(i===0||i===defs.length-1)&&typeof value==='number'&&Number.isInteger(value)&&value>=1&&value<=2147483647;
-    assert.equal(r.status,accepted?200:400,JSON.stringify({i,value,path}));
+    const valid=typeof value==='number'&&Number.isInteger(value)&&value>=1&&value<=1000000,accepted=valid&&!(i>=4&&i<=6);
+    assert.equal(r.status,valid?(accepted?200:429):400,JSON.stringify({i,value,path}));
     assert.equal(calls,before+(accepted?1:0));assert.equal(reservations(),0);
     if(accepted){assert.equal(rawSeen,raw);assert.equal(store.used(key.key).total,used.total+3);}
     else assert.deepEqual({...store.used(key.key)},used);
    }
+   await p.stop();
   }
+  // Raw literals, not JavaScript numeric literals: exercise IEEE-754 rounding
+  // and exponent forms before any request serialization can erase the evidence.
+  const numericCases:[string,number|undefined][]=[
+   ['2147483647.0000001',undefined],['2147483646.99999999',undefined],
+   ['131073.000000000001',undefined],['131072.000000000001',undefined],
+   ['1000000.00000000001',undefined],['999999.99999999999',undefined],
+   ['1.00000000000000001e6',undefined],['99999999999999999e-11',undefined],
+   ['1e6',1000000],['1000000.00000',1000000],['100000000000000000e-11',1000000],['1000001',undefined],
+   ['0.99999999999999999',undefined],['1.00000000000000001',undefined],
+   ['2.1474836470000001e9',undefined],['1.31072000000000001e5',undefined],
+   ['100000000000000001e-17',undefined],['1.'+'0'.repeat(10000)+'1',undefined],['1e999999999999999999',undefined],
+   ['1e-999999999999999999',undefined],['-0.00000000000000001',undefined],
+   ['2147483648',undefined],['1e0',1],['1.0000',1],['100000e-5',1],
+   ['131072.00000',131072],['1.31072e5',131072],
+   ['131073e0',131073],['2.147483647e9',2147483647],
+   ['214748364700000000000000e-14',2147483647]
+  ];
+  for(const [i,def] of defs.entries()){
+   const key=store.createKey({name:'raw-policy-'+i,...def}),p=new Peer(config.origin);peers.push(p);await p.auth(key.token);
+   for(const path of paths){
+    const internal=path.startsWith('/v1internal');
+    for(const [lexeme,value] of numericCases){
+     const raw=makeRaw('RAW_LITERAL',internal).replace('"RAW_LITERAL"',lexeme);
+     const accepted=value!==undefined&&value<=1000000;
+     const before=calls,used={...store.used(key.key)};start(p,++id,raw,path);const r=await result(p);
+     // Zero caps reject valid admission at reservation, rather than sending upstream.
+     const exhausted=i>=4&&i<=6;
+     assert.equal(r.status,accepted?(exhausted?429:200):400,JSON.stringify({i,path,lexeme}));
+     assert.equal(calls,before+(accepted&&!exhausted?1:0));assert.equal(reservations(),0);
+     if(accepted&&!exhausted){assert.equal(rawSeen,raw);assert.equal(store.used(key.key).total,used.total+3);}
+     else assert.deepEqual({...store.used(key.key)},used);
+    }
+    const rawBase=makeRaw(1,internal),gc='"generationConfig":{"maxOutputTokens":1}';
+    const ambiguous=[
+     rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":2147483647.0000001,"maxOutputTokens":1}'),
+     rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":1,"maxOutputTokens":2147483647.0000001}'),
+     rawBase.replace(gc,gc+',"generationConfig":{"maxOutputTokens":2}'),
+     rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":{"isLosslessNumber":true,"value":"2147483647"}}'),
+     rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":1,"maxOutputTokens":null}'),
+     rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":1,"maxOutput\\u0054okens":2}'),
+     ...(internal?[rawBase.replace('"request":','"request":{"generationConfig":{"maxOutputTokens":2}},"request":')]:[])
+    ];
+    for(const raw of ambiguous){const before=calls,used={...store.used(key.key)};start(p,++id,raw,path);const r=await result(p);assert.equal(r.status,400,raw);assert.doesNotMatch(r.body,/2147483647|position|duplicate/i);assert.equal(calls,before);assert.deepEqual({...store.used(key.key)},used);assert.equal(reservations(),0);}
+    if(i===0){
+     // Identical duplicate values are unambiguous. Arbitrary unrelated numeric
+     // fields and strings must not be mistaken for the canonical output bound.
+     for(const raw of [
+      rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":1,"maxOutputTokens":1}'),
+      rawBase.replace(gc,'"generationConfig":{"maxOutputTokens":1,"unrelated":2147483647.0000001}'),
+      rawBase.replace(gc,gc+',"unrelated":{"maxOutputTokens":2147483647.0000001}'),
+      rawBase.replace(gc,gc+',"__proto__":{"generationConfig":{"maxOutputTokens":2147483647.0000001}}'),
+      rawBase.replace(gc,'"generationConfig":{"maxOutput\\u0054okens":1e0}'),
+      rawBase.replace('SYNTHETIC_ONLY','maxOutputTokens 2147483647.0000001')
+     ]){start(p,++id,raw,path);assert.equal((await result(p)).status,200,raw);assert.equal(rawSeen,raw);}
+    }
+   }
+   await p.stop();
+  }
+  // Exhaust all absent/zero/positive cap combinations and reset periods.
+  const combo=store.createKey({name:'all-cap-combinations'}),cp=new Peer(config.origin);peers.push(cp);await cp.auth(combo.token);
+  for(const period of ['never','daily','weekly','monthly'])for(const allowance of [null,0,1e7])for(const inputCap of [null,0,1e7])for(const outputCap of [null,0,1e7]){
+   store.db.prepare('UPDATE keys SET period=?,allowance=?,inputCap=?,outputCap=? WHERE id=?').run(period,allowance,inputCap,outputCap,combo.key.id);
+   const key=store.key(combo.key.id)!,exhausted=[allowance,inputCap,outputCap].includes(0);
+   for(const path of paths)for(const [literal,valid] of [['1',true],['1000000',true],['1000001',false],['1000000.00000000001',false],['0.99999999999999999',false]] as const){
+    const raw=makeRaw('COMBO_LITERAL',path.startsWith('/v1internal')).replace('"COMBO_LITERAL"',literal),before=calls,used={...store.used(key)};
+    start(cp,++id,raw,path);const r=await result(cp),expected=valid?(exhausted?429:200):400;
+    assert.equal(r.status,expected,JSON.stringify({period,allowance,inputCap,outputCap,path,literal}));
+    assert.equal(calls,before+(expected===200?1:0));assert.equal(reservations(),0);
+    if(expected===200){assert.equal(rawSeen,raw);assert.equal(store.used(key).total,used.total+3);}
+    else assert.deepEqual({...store.used(key)},used);
+   }
+  }
+  await cp.stop();
   const bounded=store.createKey({name:'bounded-boundary',allowance:1e7}),q=new Peer(config.origin);peers.push(q);await q.auth(bounded.token);
-  for(const value of [1,131072]){const raw=makeRaw(value,true);start(q,++id,raw);assert.equal((await result(q)).status,200);assert.equal(rawSeen,raw);}
+  for(const value of [1,1000000]){const raw=makeRaw(value,true);start(q,++id,raw);assert.equal((await result(q)).status,200);assert.equal(rawSeen,raw);}
   const capped=store.createKey({name:'cap-enforcement',outputCap:4}),c=new Peer(config.origin);peers.push(c);await c.auth(capped.token);const beforeCap=calls;
   start(c,++id,makeRaw(5,true));assert.equal((await result(c)).status,429);assert.equal(calls,beforeCap);assert.equal(store.used(capped.key).total,0);
   const unlimited=store.createKey({name:'upstream-validation'}),p=new Peer(config.origin);peers.push(p);await p.auth(unlimited.token);
-  reject=true;const raw=makeRaw(2147483647,true);start(p,++id,raw,'/v1internal:streamGenerateContent');let r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Upstream request rejected/);assert.doesNotMatch(r.body,/CANARY/);assert.equal(rawSeen,raw);assert.equal(store.used(unlimited.key).total,0);assert.equal(reservations(),0);
-  reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,2147483647);assert.equal(store.used(unlimited.key).input,Buffer.byteLength(raw)+1024);assert.equal(reservations(),0);
+  reject=true;const raw=makeRaw(1000000,true);start(p,++id,raw,'/v1internal:streamGenerateContent');let r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Upstream request rejected/);assert.doesNotMatch(r.body,/CANARY/);assert.equal(rawSeen,raw);assert.equal(store.used(unlimited.key).total,0);assert.equal(reservations(),0);
+  reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,1000000);assert.equal(store.used(unlimited.key).input,Buffer.byteLength(raw)+1024);assert.equal(reservations(),0);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
