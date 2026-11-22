@@ -1,8 +1,9 @@
 import {useCallback,useEffect,useMemo,useRef,useState,type FormEvent,type ReactNode} from 'react';
 import {useTable,type ColumnDef} from '@tanstack/react-table';
 import {Bar,BarChart,CartesianGrid,XAxis,YAxis} from 'recharts';
-import {Activity,KeyRound,Lock,Plus,RefreshCw,Server} from 'lucide-react';
+import {Activity,KeyRound,Lock,Plus,RefreshCw,Server,Pause,Play,Trash2} from 'lucide-react';
 import {api,signIn,setCsrf,setUnauthorizedHandler} from '@/lib/api';
+import {accountFamilies,quotaWindow,quotaLevel,relativeReset,type QuotaBucket} from '@/lib/accounts';
 import {Button} from '@/components/ui/button';
 import {Input} from '@/components/ui/input';
 import {Label} from '@/components/ui/label';
@@ -16,7 +17,6 @@ import {DataGridTable} from '@/components/reui/data-grid/data-grid-table';
 import {DataGridPagination} from '@/components/reui/data-grid/data-grid-pagination';
 
 type Any=any;
-const pct=new Intl.NumberFormat('en',{style:'percent',maximumFractionDigits:0});
 const compact=new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1});
 const num=(n:unknown)=>compact.format(Number(n)||0);
 const full=(n:unknown)=>new Intl.NumberFormat('en').format(Number(n)||0);
@@ -34,6 +34,19 @@ function Grid<T extends object>({data,columns,empty,id}:{data:T[];columns:Column
  const table=useTable({features:dataGridFeatures,data,columns,initialState:{pagination:{pageIndex:0,pageSize:20}}});
  if(!data.length)return <div id={id} className="px-6 py-12 text-center text-sm text-muted-foreground">{empty}</div>;
  return <div id={id}><DataGrid table={table} recordCount={data.length} tableLayout={{headerBackground:false,rowBorder:true,cellBorder:false,dense:false}}><DataGridContainer><DataGridTable/></DataGridContainer>{data.length>20&&<DataGridPagination/>}</DataGrid></div>;
+}
+
+function QuotaCell({buckets}:{buckets:QuotaBucket[]}){
+ if(!buckets.length)return <span className="text-xs text-muted-foreground">Not available</span>;
+ return <div className="account-quota">{buckets.map((b,i)=>{
+  const known=typeof b.remaining==='number'&&Number.isFinite(b.remaining);
+  const value=known?Math.max(0,Math.min(100,b.remaining!*100)):0;
+  return <div key={i} className="account-quota-line" title={b.label}>
+   <span className="account-window">{quotaWindow(b.label)}</span>
+   <span className="account-capacity"><span className="account-track" role="meter" aria-label={(b.label||b.family)+' remaining'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={known?value:undefined} aria-valuetext={b.disabled?'Disabled':known?Math.round(value)+'% remaining':'Unknown'}><span className={'account-fill quota-'+quotaLevel(b.remaining)} style={{width:value+'%'}}/></span><strong>{b.disabled?'Off':known?Math.round(value)+'%':'N/A'}</strong></span>
+   <span className="account-reset" title={b.reset?when(b.reset):undefined}>{relativeReset(b.reset)}</span>
+  </div>;
+ })}</div>;
 }
 
 export default function App(){
@@ -198,19 +211,33 @@ const addAccount=()=>act(async()=>{
 
     {admin&&<section id="accounts-view" hidden={view!=='accounts'} className="space-y-4">
      <div className="flex items-center justify-between gap-3"><p className="text-muted-foreground">Connected accounts and their capacity.</p><Button id="add-account" onClick={addAccount} disabled={busy} className="rounded-full"><Plus className="size-4"/>Connect Google</Button></div>
-     <div id="accounts" className="grid gap-4 md:grid-cols-2">
-      {!accounts.length&&<p className="col-span-full py-16 text-center text-sm text-muted-foreground">No connected accounts yet. Connect Google to get started.</p>}
-      {accounts.map(a=>{const act2=Object.entries(active).filter(([,id])=>id===a.id).map(([f])=>f);const paused=a.status==='disabled';const nm=a.email||a.id;
-       return <Card key={a.id} className="rounded-2xl"><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="break-all text-base">{nm}</CardTitle><Badge variant={a.blocked||(!paused&&a.status!=='ready')?'destructive-light':paused?'secondary':'success-light'}>{a.blocked?'Blocked':paused?'Paused':a.status==='ready'?'Ready':a.status==='auth_error'?'Auth error':String(a.status||'Unknown').replace(/_/g,' ').replace(/^./,(c:string)=>c.toUpperCase())}</Badge></div></CardHeader>
-       <CardContent><div className="divide-y"><Row k="Sharing" v={paused?'Paused':'Enabled'}/>{a.shared&&<Row k="Shared Gemini pool" v="Yes"/>}{act2.length>0&&<Row k="Active for" v={act2.join(', ')}/>}
-        {(a.buckets||[]).map((b:Any,i:number)=><Row key={i} k={(b.label||b.family)+' · resets '+when(b.reset)} v={b.disabled?'Disabled':typeof b.remaining==='number'?pct.format(b.remaining)+' remaining':'Unknown'}/>)}
-        {!(a.buckets||[]).length&&<Row k="Quota" v="Not available yet"/>}<Row k="Updated" v={when(a.updated)}/>
-        {a.cooldowns&&Object.keys(a.cooldowns).length>0&&<Row k="Cooldowns" v={JSON.stringify(a.cooldowns)}/>}{a.denied&&Object.keys(a.denied).length>0&&<Row k="Unavailable" v={JSON.stringify(a.denied)}/>}</div>
-        <div className="mt-4 flex flex-wrap gap-2">
-         <Button variant="secondary" size="sm" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/refresh',{method:'POST',body:{}});await load();})}>Refresh quotas</Button>
-         <Button variant="secondary" size="sm" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/toggle',{method:'POST',body:{}});await load();})}>{paused?'Enable sharing':'Pause sharing'}</Button>
-         <Button variant="ghost" size="sm" className="text-destructive" disabled={busy} onClick={()=>ask('Remove '+nm+'?','It will be removed from the proxy.','Remove',async()=>{await api('/api/accounts/'+encodeURIComponent(a.id),{method:'DELETE'});await load();})}>Remove</Button></div></CardContent></Card>;})}
-     </div></section>}
+     <p className="text-xs text-muted-foreground lg:hidden">Scroll sideways for quotas and account actions.</p>
+     <div id="accounts" className="account-table-shell">
+      {!accounts.length?<p className="py-16 text-center text-sm text-muted-foreground">No connected accounts yet. Connect Google to get started.</p>:<div className="account-table-scroll" role="region" aria-label="Connected accounts, scroll horizontally for quotas and actions" tabIndex={0}>
+       <table className="account-table"><caption className="sr-only">Connected accounts, remaining quotas and sharing controls</caption><thead><tr>
+        <th scope="col" className="account-identity">Account</th><th scope="col">Status</th>{accountFamilies.map(([f,label])=><th key={f} scope="col">{label}</th>)}<th scope="col" className="account-actions-heading">Actions</th>
+       </tr></thead><tbody>{accounts.map(a=>{
+        const selected=Object.entries(active).filter(([,id])=>id===a.id).map(([f])=>accountFamilies.find(([id])=>id===f)?.[1]||f);
+        const paused=a.status==='disabled',nm=a.email||a.id;
+        const status=a.blocked?'Blocked':paused?'Paused':a.status==='ready'?'Ready':a.status==='auth_error'?'Auth error':String(a.status||'Unknown').replace(/_/g,' ').replace(/^./,(c:string)=>c.toUpperCase());
+        const extra=(a.buckets||[]).filter((b:Any)=>!accountFamilies.some(([f])=>f===b.family));
+        return <tr key={a.id}>
+         <th scope="row" className="account-identity"><div className="account-name" title={nm}><span className="account-avatar" aria-hidden="true">{nm[0]?.toUpperCase()}</span><span className="account-email">{nm}</span></div>
+          <div className="account-meta" title={when(a.updated)}>Updated {a.updated?new Date(a.updated).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'unknown'}</div>
+          {(a.shared||selected.length>0)&&<div className="account-meta">{[a.shared?'Shared Gemini pool':'',selected.length?'Active for '+selected.join(', '):''].filter(Boolean).join(' · ')}</div>}
+          {(extra.length>0||Object.keys(a.cooldowns||{}).length>0||Object.keys(a.denied||{}).length>0)&&<details className="account-details"><summary>Details</summary>{extra.map((b:Any,i:number)=><div key={i}>{b.label||b.family}: {b.disabled?'Disabled':typeof b.remaining==='number'?Math.round(b.remaining*100)+'% remaining':'Unknown'} · {relativeReset(b.reset)}</div>)}{Object.keys(a.cooldowns||{}).length>0&&<div>Cooldowns: {JSON.stringify(a.cooldowns)}</div>}{Object.keys(a.denied||{}).length>0&&<div>Unavailable: {JSON.stringify(a.denied)}</div>}</details>}
+         </th>
+         <td><Badge variant={a.blocked||(!paused&&a.status!=='ready')?'destructive-light':paused?'secondary':'success-light'}>{status}</Badge></td>
+         {accountFamilies.map(([f])=><td key={f} className={paused?'account-paused':undefined}><QuotaCell buckets={(a.buckets||[]).filter((b:Any)=>b.family===f)}/></td>)}
+         <td><div className="account-actions">
+          <Button variant="ghost" size="icon" title="Refresh quotas" aria-label="Refresh quotas" disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/refresh',{method:'POST',body:{}});await load();})}><RefreshCw className="size-4"/></Button>
+          <Button variant="ghost" size="icon" title={paused?'Enable sharing':'Pause sharing'} aria-label={paused?'Enable sharing':'Pause sharing'} disabled={busy} onClick={()=>act(async()=>{await api('/api/accounts/'+encodeURIComponent(a.id)+'/toggle',{method:'POST',body:{}});await load();})}>{paused?<Play className="size-4"/>:<Pause className="size-4"/>}</Button>
+          <Button variant="ghost" size="icon" title="Remove" aria-label="Remove" className="text-destructive" disabled={busy} onClick={()=>ask('Remove '+nm+'?','It will be removed from the proxy.','Remove',async()=>{await api('/api/accounts/'+encodeURIComponent(a.id),{method:'DELETE'});await load();})}><Trash2 className="size-4"/></Button>
+         </div></td>
+        </tr>;
+       })}</tbody></table>
+      </div>}
+     </div><p className="text-xs text-muted-foreground">Quotas are last reported values, not account availability. Green ≥50%, amber ≥20%, red below 20%. <span className="lg:hidden">Scroll sideways for all columns.</span></p></section>}
 
     {admin&&<section id="keys-view" hidden={view!=='keys'} className="space-y-4">
      <div className="flex items-center justify-between gap-3"><p className="text-muted-foreground">A separate key for every person, tool, or project.</p><Button id="add-key" onClick={()=>setKeyOpen(true)} className="rounded-full"><Plus className="size-4"/>Create key</Button></div>
