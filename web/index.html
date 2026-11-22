@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>agyp · Control room</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<div class="ambient" aria-hidden="true"></div>
+<section id="login" class="login-shell" hidden>
+<div class="login-card">
+<div class="brand-mark" aria-hidden="true">a</div>
+<p class="eyebrow">YOUR PRIVATE GATEWAY</p>
+<h1>A little more<br>control.</h1>
+<p class="muted">Accounts, allowances, and every token.<br>All in one quiet place.</p>
+<form id="login-form">
+<label for="token">Access key</label>
+<input id="token" type="password" placeholder="agyp_… . …" autocomplete="off" spellcheck="false" required>
+<button class="primary wide" type="submit">Unlock dashboard <span aria-hidden="true">↗</span></button>
+</form>
+<p class="fine">Your key stays in this browser's memory. Only a signed challenge leaves it. Sessions last 15 minutes.</p>
+</div>
+<p class="login-footer">agyp <span>PRIVATE BY DESIGN</span></p>
+</section>
+<div id="dashboard" class="app" hidden>
+<aside class="sidebar">
+<a class="wordmark" href="/" aria-label="agyp home"><span class="brand-mark small">a</span>agyp<span class="badge">PROXY</span></a>
+<p class="eyebrow nav-label">WORKSPACE</p>
+<nav aria-label="Dashboard">
+<button data-view="overview" class="nav-button active">◷ <span>Overview</span></button>
+<button data-view="accounts" class="nav-button admin-only">▦ <span>Accounts</span></button>
+<button data-view="keys" class="nav-button admin-only">⚿ <span>Access keys</span></button>
+</nav>
+<div class="sidebar-bottom"><span class="live-dot"></span> Private connection<p id="session-label" class="fine"></p><button id="logout" class="text-button">Lock dashboard</button></div>
+</aside>
+<main>
+<header><div><p class="eyebrow">CONTROL ROOM <span class="slash">/</span> <span id="breadcrumb">OVERVIEW</span></p><h1 id="page-title">Good to be in control.</h1><p id="welcome" class="muted"></p></div><div class="header-actions"><button id="refresh" class="secondary">↻ <span>Refresh</span></button><button id="mobile-logout" class="secondary mobile-lock">Lock</button></div></header>
+<div id="loading" class="loading" role="status" hidden>Getting everything ready…</div>
+<section id="overview-view" class="view">
+<div class="metric-grid" id="metrics"></div>
+<div class="overview-grid"><article class="card activity"><div class="card-heading"><div><p class="eyebrow">THE BIG PICTURE</p><h2>Token activity</h2></div><span class="pill">Daily usage</span></div><div id="chart" class="chart"></div><div class="legend"><span><i class="legend-in"></i>Input</span><span><i class="legend-out"></i>Output</span><span><i class="legend-cache"></i>Cached input</span></div></article>
+<article class="card allowance"><p class="eyebrow">ROOM TO CREATE</p><h2>Your allowance</h2><div id="allowance"></div></article></div>
+<article class="card"><div class="card-heading"><div><p class="eyebrow">A CLOSER LOOK</p><h2>Usage by model</h2></div></div><div id="models" class="table-wrap"></div></article>
+</section>
+<section id="accounts-view" class="view" hidden><div class="section-heading"><p class="muted">Connected accounts and their available capacity.</p><button id="add-account" class="primary">+ Connect Google</button></div><div id="accounts" class="account-grid"></div></section>
+<section id="keys-view" class="view" hidden><div class="section-heading"><p class="muted">A separate key for every person, tool, or project.</p><button id="add-key" class="primary">+ Create key</button></div><div id="keys" class="card table-wrap"></div></section>
+<footer>agyp <span>A clear view of what flows through.</span></footer>
+</main>
+</div>
+<div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+<dialog id="key-dialog"><form id="key-form"><div class="card-heading"><h2>Create access key</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Give it a name and just the room it needs.</p><label for="key-name">Name</label><input id="key-name" required maxlength="100" placeholder="My workstation"><div class="form-grid"><div><label for="key-allowance">Total token allowance</label><input id="key-allowance" type="number" min="0" step="1" placeholder="Unlimited"></div><div><label for="key-period">Resets</label><select id="key-period"><option value="never">Never</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div><div><label for="key-input">Input token cap</label><input id="key-input" type="number" min="0" step="1" placeholder="Unlimited"></div><div><label for="key-output">Output token cap</label><input id="key-output" type="number" min="0" step="1" placeholder="Unlimited"></div></div><label for="key-expiry">Expires <span class="muted">(optional, local time)</span></label><input id="key-expiry" type="datetime-local"><button type="submit" class="primary wide">Create key</button></form></dialog>
+<dialog id="secret-dialog"><div class="card-heading"><h2>Your new key</h2><button class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Copy it now. This is the only time it will be shown.</p><label for="new-secret">Access key</label><textarea id="new-secret" readonly rows="3" spellcheck="false"></textarea><button id="copy-secret" class="primary wide">Copy key</button><p class="fine">Closing this window clears the key from the page.</p></dialog>
+<dialog id="oauth-dialog"><form id="oauth-form"><div class="card-heading"><h2>Finish connecting Google</h2><button type="button" class="icon-button close-dialog" aria-label="Close">×</button></div><p class="muted">Sign in in the Google window. When it redirects to an unreachable localhost page, copy that page's full address and paste it below. The page not loading is expected.</p><label for="oauth-callback">Full localhost callback URL</label><input id="oauth-callback" type="url" required autocomplete="off" spellcheck="false" placeholder="http://localhost:…/?code=…&amp;state=…"><p class="fine">This callback is used once to finish sign-in. Google access and refresh tokens never appear here.</p><button class="primary wide" type="submit">Complete connection</button></form></dialog>
+</body></html>
