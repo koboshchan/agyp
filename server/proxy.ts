@@ -115,6 +115,11 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
     }
     status=upstream.status;res.status(status);res.setHeader('content-type','application/json');res.end(JSON.stringify({error:{message:'Upstream request rejected',code:status}}));final={input:0,output:0,cached:0,total:0};return;
    }
+   if(!upstream.ok){
+    await readBounded(upstream,1_048_576);
+    status=upstream.status;final={input:0,output:0,cached:0,total:0};
+    res.status(status).json({error:{message:'Upstream request rejected',code:status}});return;
+   }
    status=upstream.status;res.status(status);
    const responseConnection=(upstream.headers.get('connection')??'').split(',').map(x=>x.trim());
    for(const [name,value]of upstream.headers)if(!strip.has(name)&&!responseConnection.includes(name)&&!['content-encoding','content-security-policy','strict-transport-security','x-frame-options'].includes(name))res.setHeader(name,value);

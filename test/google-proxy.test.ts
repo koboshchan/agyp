@@ -27,6 +27,7 @@ test('raw passthrough, forced refresh same account, reactive repair, family403 a
   if(mode==='401'&&req.headers.authorization==='Bearer old-a'){res.writeHead(401).end('{}');return;}
   if(mode==='sig'&&!body.includes('skip_thought_signature_validator')){res.writeHead(400).end('{"error":{"message":"Corrupted thought signature"}}');return;}
   if(mode==='403'&&req.headers.authorization==='Bearer old-a'){res.writeHead(403).end('{"error":{"status":"RATE_LIMIT_EXCEEDED"}}');return;}
+  if(mode==='server-error'){res.setHeader('x-account-secret','must-not-leak');res.writeHead(500).end('{"private":"must-not-leak"}');return;}
   if(mode==='forbid'){res.writeHead(403).end('{"private":"must-not-leak"}');return;}
   res.setHeader('content-type','application/json');res.end('{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3},"text":"OK"}');
  });
@@ -43,6 +44,7 @@ test('raw passthrough, forced refresh same account, reactive repair, family403 a
  mode='401';r=await call(raw);assert.equal(r.status,200);await r.text();assert.equal(refreshed,1);assert.deepEqual(calls.slice(-2).map(c=>c.auth),['Bearer old-a','Bearer renewed-a']);assert(calls.slice(-2).every(c=>c.body===raw));
  mode='sig';const sig=JSON.stringify({model:'gemini-flash',request:{contents:[{parts:[{functionCall:{name:'x'},thoughtSignature:'bad'}]}]}});before=calls.length;r=await call(sig);assert.equal(r.status,200);await r.text();assert.equal(calls.length,before+2);assert.equal(calls[before].body,sig);assert(calls.at(-1)?.body.includes('skip_thought_signature_validator'));
  const a=account('a');store.putAccount(a);mode='403';r=await call(raw);assert.equal(r.status,200);await r.text();assert(!store.accounts().find(a=>a.id==='a')!.blocked);assert(pool.eligible(store.accounts().find(a=>a.id==='a')!,'claude-x'));
+ mode='server-error';r=await call(raw);assert.equal(r.status,500);assert.equal(r.headers.get('x-account-secret'),null);assert.equal(r.headers.get('x-agyp-upstream-model'),null);assert(!(await r.text()).includes('must-not-leak'));
  mode='forbid';r=await call(raw);assert.equal(r.status,403);assert(!(await r.text()).includes('must-not-leak'));
  }finally{await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
