@@ -20,15 +20,19 @@ const store=new Store(dir);
 // Reserve a random port before building Config, so origin matches the actual listener.
 const reservation=createServer();const port=await listen(reservation);await close(reservation);
 const origin=`http://127.0.0.1:${port}`;
-const {app}=createApp(store,{origin,secure:false,upstream:origin,clientId:'integration',clientSecret:'integration'});
+const {app}=createApp(store,{origin,secure:false,upstream:origin,clientId:'integration',clientSecret:'integration',loginLimit:1000});
 const server=createServer(app);
 let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
 try {
   await listen(server,port);
   browser=await chromium.launch({executablePath:process.env.CHROME_BIN||undefined,args:['--no-sandbox']});
-  const context=await browser.newContext();const page=await context.newPage();
+  for(const device of ['desktop','mobile'] as const) for(const theme of ['light','dark'] as const) {
+  store.db.exec('DELETE FROM usage; DELETE FROM sessions;');
+  const context=await browser.newContext({viewport:device==='desktop'?{width:1440,height:1000}:{width:390,height:844},colorScheme:theme});const page=await context.newPage();
   const errors:string[]=[];
   const authRequests:{path:string;body:any;wire:string}[]=[];
+  page.on('console',m=>{if(m.type()==='error'&&!(m.location().url.endsWith('/favicon.ico')&&m.text().includes('404'))&&!/^Failed to load resource: the server responded with a status of (401|403) \(/.test(m.text()))errors.push(m.text()+' '+m.location().url);});
+  await page.addInitScript(()=>{document.addEventListener('securitypolicyviolation',e=>{console.error('CSP violation '+e.violatedDirective+' '+e.blockedURI);});});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('request',req=>{const path=new URL(req.url()).pathname;if(path.startsWith('/auth/'))authRequests.push({path,body:req.postDataJSON(),wire:JSON.stringify({url:req.url(),headers:req.headers(),body:req.postData()})});});
   async function login(token:string) {
@@ -51,6 +55,10 @@ try {
     },{path,method,body,headers});
   }
   await page.goto(origin);await login(store.adminToken);
+  async function noOverflow() { assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,`${device}/${theme} overflow`); }
+  await noOverflow();
+  for(const view of ['accounts','keys','overview']) { await page.locator(`[data-view=${view}]:visible`).first().click();await noOverflow(); }
+
   const cookie=(await context.cookies()).find(c=>c.name==='agyp_session');
   assert.ok(cookie?.httpOnly);assert.equal(cookie.sameSite,'Strict');
   assert.equal((await api('/api/keys')).status,200);
@@ -63,7 +71,7 @@ try {
   const me=await api('/api/me');
   const cross=await context.request.post(origin+'/api/keys',{headers:{Origin:'https://attacker.invalid','X-CSRF-Token':me.body.csrf},data:{name:'cross origin forbidden'}});
   assert.equal(cross.status(),403);assert.equal(store.keys().length,count);
-  await page.click('[data-view=keys]');await page.click('#add-key');
+  await page.locator('[data-view=keys]:visible').first().click();await page.click('#add-key');
   await page.fill('#key-name','Integration personal');await page.fill('#key-allowance','120000');
   await page.fill('#key-input','80000');await page.fill('#key-output','40000');await page.selectOption('#key-period','weekly');
   await page.fill('#key-expiry','2099-01-02T12:30');
@@ -71,13 +79,13 @@ try {
   const token=await page.inputValue('#new-secret');assert.ok(/^agyp_[a-f0-9]{16}\./.test(token),'UI returns a real key');
   const key=store.key(token.slice(5).split('.')[0])!;
   assert.equal(key.admin,0);assert.equal(key.allowance,120000);assert.equal(key.inputCap,80000);assert.equal(key.outputCap,40000);assert.equal(key.period,'weekly');assert.ok(key.expires!>Date.now());
-  await page.locator('#secret-dialog .close-dialog').click();assert.equal(await page.inputValue('#new-secret'),'');
+  await page.locator('#secret-dialog').getByRole('button',{name:'Close',exact:true}).click();assert.equal(await page.inputValue('#new-secret'),'');
   // Seed usage through the real Store accounting path, not a mocked stats response.
   const model='<img src=x onerror=alert(1)>';
   store.finish(store.reserve(key,model,120,30),{input:120,output:30,cached:20,total:150},200);
   const admin=store.keys().find(k=>k.admin)!;
   store.finish(store.reserve(store.key(admin.id)!,'admin-only-model',900,90),{input:900,output:90,cached:0,total:990},200);
-  await page.click('#logout');await expect(page.locator('#login')).toBeVisible();
+  await page.locator(device==='mobile'?'#mobile-logout':'#logout').click();await expect(page.locator('#login')).toBeVisible();
   assert.equal((await api('/api/me')).status,401);
   assert.equal((await context.cookies()).some(c=>c.name==='agyp_session'),false);
   await login(token);
@@ -89,19 +97,31 @@ try {
   const stats=await api('/api/stats');assert.equal(stats.status,200);assert.equal(stats.body.models.length,1);
   assert.equal(stats.body.models[0].key_id,key.id);assert.equal(stats.body.models[0].cached,20);assert.equal(stats.body.models[0].total,150);
   assert.equal(stats.body.graph.length,1);assert.equal(stats.body.graph[0].input,120);
-  await expect(page.locator('#chart svg')).toHaveCount(1);
+  await expect.poll(()=>page.locator('#chart svg').count()).toBeGreaterThanOrEqual(1);
+  const fills=await page.locator('#chart .recharts-bar-rectangle path').evaluateAll(nodes=>nodes.map(n=>getComputedStyle(n).fill));
+  assert.ok(fills.length>0 && fills.every(c=>c!=='rgb(0, 0, 0)'&&c!=='none'),'chart bars must resolve external CSS colors under production CSP');
   assert.equal(await page.locator('#models img').count(),0);assert.ok((await page.locator('#models').innerText()).includes(model));
   assert.ok(!(await page.locator('#models').innerText()).includes('admin-only-model'));
-  assert.equal(await page.locator('#models th').first().textContent(),'Model');
+  await expect(page.locator('#models th').first()).toContainText('Model');
   assert.equal(await page.evaluate(()=>localStorage.length+sessionStorage.length),0);
+  await noOverflow();
   await page.reload();await expect(page.locator('#dashboard')).toBeVisible();await expect(page.locator('#loading')).toBeHidden();
   await page.setViewportSize({width:390,height:844});await expect(page.locator('#mobile-logout')).toBeVisible();
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
-  await page.screenshot({path:'/tmp/agyp-integration.png',fullPage:true});
+
   await page.click('#mobile-logout');await expect(page.locator('#login')).toBeVisible();assert.equal((await api('/api/me')).status,401);
   assert.equal(await page.locator('#chart svg').count(),0);
   assert.ok(authRequests.every(r=>!r.wire.includes(token)&&!r.wire.includes(store.adminToken)),'no raw permanent keys in auth network data');
+  // Expire a real persisted session and verify reload cannot restore its data.
+  await login(token);
+  store.db.prepare('UPDATE sessions SET expires=? WHERE key_id=?').run(Date.now()-1,key.id);
+  assert.equal((await api('/api/me')).status,401);
+  await page.click('#refresh');await expect(page.locator('#login')).toBeVisible();
+  assert.equal(await page.locator('#chart svg').count(),0);
   assert.deepEqual(errors,[]);
+  await context.close();
+  }
+
   console.log('PASS actual Express/SQLite/Chromium integration: HMAC, admin key creation, caps/period/expiry, cookie/logout, role isolation, real usage graph, XSS-safe model, CSRF/origin denial, key secrecy, mobile, zero JS errors');
 } finally {
   await browser?.close();if(server.listening)await close(server);store.close();await rm(dir,{recursive:true,force:true});
