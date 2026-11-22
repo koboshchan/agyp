@@ -42,6 +42,7 @@ For local checks, use Node.js 24 and Go 1.23 or later.
 ```sh
 npm ci
 npm run build
+npm run build:web
 npm test
 npx playwright install --with-deps chromium
 npm run test:browser
