@@ -478,7 +478,7 @@ func run(args []string) int {
 	// Snapshot terminal settings before the TUI enters raw mode. Restore even
 	// when an unresponsive child needs forced termination.
 	defer restoreTerminal()()
-	cleanupChild, setupErr := prepareChild(cmd)
+	cleanupChild, containChild, setupErr := prepareChild(cmd)
 	if setupErr != nil {
 		fmt.Fprintln(os.Stderr, "cannot prepare child containment")
 		return 1

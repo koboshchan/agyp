@@ -50,24 +50,23 @@ func restoreTerminal() func() {
 
 // A private kill-on-close job contains only this invocation's child tree.
 // Never enumerate or kill processes by name. The job handle is noninheritable.
-var childJob windows.Handle
+var getProcessIDOfThread = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetProcessIdOfThread")
 
-func prepareChild(cmd *exec.Cmd) (func(), error) {
+func prepareChild(cmd *exec.Cmd) (func(), func(*exec.Cmd) error, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{}
 	info.BasicLimitInformation.LimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 	if _, err = windows.SetInformationJobObject(job, windows.JobObjectExtendedLimitInformation, uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
 		windows.CloseHandle(job)
-		return nil, err
+		return nil, nil, err
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_SUSPENDED}
-	childJob = job
-	return func() { windows.CloseHandle(job) }, nil
+	return func() { windows.CloseHandle(job) }, func(c *exec.Cmd) error { return containWindowsChild(c, job) }, nil
 }
-func containChild(cmd *exec.Cmd) error {
+func containWindowsChild(cmd *exec.Cmd, childJob windows.Handle) error {
 	h, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		return err
@@ -88,8 +87,18 @@ func containChild(cmd *exec.Cmd) error {
 		if entry.OwnerProcessID != uint32(cmd.Process.Pid) {
 			continue
 		}
-		thread, e := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+		thread, e := windows.OpenThread(windows.THREAD_SUSPEND_RESUME|windows.THREAD_QUERY_LIMITED_INFORMATION, false, entry.ThreadID)
 		if e != nil {
+			return e
+		}
+		if e := verifyThreadOwner(thread, uint32(cmd.Process.Pid), func(h windows.Handle) (uint32, error) {
+			owner, _, err := getProcessIDOfThread.Call(uintptr(h))
+			if owner == 0 {
+				return 0, err
+			}
+			return uint32(owner), nil
+		}); e != nil {
+			windows.CloseHandle(thread)
 			return e
 		}
 		count, e := windows.ResumeThread(thread)
@@ -103,4 +112,16 @@ func containChild(cmd *exec.Cmd) error {
 		return nil
 	}
 	return errors.New("suspended child primary thread missing")
+}
+
+// Query on the opened handle, not the stale snapshot ID, before resuming it.
+func verifyThreadOwner(thread windows.Handle, expected uint32, query func(windows.Handle) (uint32, error)) error {
+	owner, err := query(thread)
+	if err != nil {
+		return err
+	}
+	if owner == 0 || owner != expected {
+		return errors.New("child thread ownership changed")
+	}
+	return nil
 }

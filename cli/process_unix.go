@@ -78,5 +78,6 @@ func childSignalExit(x *exec.ExitError) int {
 	}
 	return 0
 }
-func prepareChild(cmd *exec.Cmd) (func(), error) { return func() {}, nil }
-func containChild(cmd *exec.Cmd) error           { return nil }
+func prepareChild(cmd *exec.Cmd) (func(), func(*exec.Cmd) error, error) {
+	return func() {}, func(*exec.Cmd) error { return nil }, nil
+}
