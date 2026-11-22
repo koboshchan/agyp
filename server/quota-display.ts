@@ -67,7 +67,7 @@ export function mapAvailableModels(value:unknown,q:DisplayQuota){
   if(quotaInfo!==undefined&&!object(quotaInfo))throw new Error('Invalid model quota');
   // Keep model capability/default metadata. Existing absent quotaInfo is not an
   // entitlement gap and must not be turned into a fabricated model record.
-  Object.defineProperty(models,id,{enumerable:true,writable:true,configurable:true,value:{...metadata(rest) as Record<string,unknown>,...(quotaInfo===undefined?{}:{quotaInfo:{remainingFraction:modelFraction(id,q),...(q.reset?{resetTime:q.reset}:{})}})}});
+  Object.defineProperty(models,id,{enumerable:true,writable:true,configurable:true,value:{...metadata(rest) as Record<string,unknown>,...(quotaInfo===undefined?{}:{quotaInfo:{...without(quotaInfo,quotaFields),remainingFraction:modelFraction(id,q),...(q.reset?{resetTime:q.reset}:{})}})}});
  }
  const root=without(value,['models']);
  return {...root,models};

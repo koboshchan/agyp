@@ -92,3 +92,11 @@ test('provider group/bucket descriptors, IDs and extra capability metadata survi
  const models=mapAvailableModels({models:{'gemini-flash':{supportsThinking:true,quotaInfo:{remainingFraction:0.1},contextWindow:1000},'no-quota':{displayName:'No quota'}},arbitraryCapability:{flag:true}},q) as any;
  assert.equal(models.models['gemini-flash'].contextWindow,1000);assert.equal('quotaInfo' in models.models['no-quota'],false);assert.deepEqual(models.arbitraryCapability,{flag:true});
 });
+
+test('model quotaInfo retains sanitized unknown non-quota metadata while replacing every quota arm/reset alias',async()=>{
+ const {mapAvailableModels}=await import('../server/quota-display.js');
+ for(const reset of [undefined,'2026-12-01T00:00:00.000Z']){
+  const out=mapAvailableModels({models:{'gemini-4-hydrogen':{quotaInfo:{additionalInfo:{capability:true,email:'private@example.invalid'},description:'retained',remainingAmount:'999',remaining_amount:'998',remainingFraction:0.1,remaining_fraction:0.2,resetTime:'2099',reset_time:'2098',accountId:'private'}}}},{capped:true,fraction:0.4,reset}) as any;
+  assert.deepEqual(out.models['gemini-4-hydrogen'].quotaInfo,{additionalInfo:{capability:true},description:'retained',remainingFraction:0.4,...(reset?{resetTime:reset}:{})});
+ }
+});
