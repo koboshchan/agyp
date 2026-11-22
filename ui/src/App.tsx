@@ -30,10 +30,10 @@ function Meter({used,cap}:{used:number;cap:number|null}){
  return <div role="meter" aria-label="Allowance used" aria-valuemin={0} aria-valuemax={cap??Math.max(used,1)} aria-valuenow={Math.min(used,cap??used)} className="h-1.5 w-full overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width] duration-300" style={{width:pct+'%'}}/></div>;
 }
 function Row({k,v}:{k:string;v:ReactNode}){return <div className="flex items-baseline justify-between gap-4 py-1.5 text-sm"><span className="text-muted-foreground">{k}</span><strong className="text-right font-medium tabular-nums">{v}</strong></div>;}
-function Grid<T extends object>({data,columns,empty,id}:{data:T[];columns:ColumnDef<DataGridFeatures,T>[];empty:string;id?:string}){
+function Grid<T extends object>({data,columns,empty,id,scrollLabel}:{data:T[];columns:ColumnDef<DataGridFeatures,T>[];empty:string;id?:string;scrollLabel?:string}){
  const table=useTable({features:dataGridFeatures,data,columns,initialState:{pagination:{pageIndex:0,pageSize:20}}});
  if(!data.length)return <div id={id} className="px-6 py-12 text-center text-sm text-muted-foreground">{empty}</div>;
- return <div id={id}><DataGrid table={table} recordCount={data.length} tableLayout={{headerBackground:false,rowBorder:true,cellBorder:false,dense:false}}><DataGridContainer><DataGridTable/></DataGridContainer>{data.length>20&&<DataGridPagination/>}</DataGrid></div>;
+ return <div id={id} className={scrollLabel?'min-w-0 overflow-x-auto':undefined} role={scrollLabel?'region':undefined} aria-label={scrollLabel} tabIndex={scrollLabel?0:undefined}><DataGrid table={table} recordCount={data.length} tableLayout={{headerBackground:false,rowBorder:true,cellBorder:false,dense:false}}><DataGridContainer className={scrollLabel?'overflow-visible':undefined}><DataGridTable/></DataGridContainer>{data.length>20&&<DataGridPagination/>}</DataGrid></div>;
 }
 
 function QuotaCell({buckets}:{buckets:QuotaBucket[]}){
@@ -126,7 +126,7 @@ export default function App(){
   {id:'used',header:'Used',size:100,accessorFn:(k:Any)=>full(k.used?.total)},
   {id:'expires',header:'Expires',size:160,accessorFn:(k:Any)=>when(k.expires)},
   {id:'status',header:'Status',size:100,cell:({row}:Any)=>{const k=row.original;const s=k.revoked?'Revoked':k.expires&&k.expires<Date.now()?'Expired':'Active';return <Badge variant={s==='Active'?'success-light':'destructive-light'}>{s}</Badge>}},
-  {id:'actions',header:()=><span className="sr-only">Actions</span>,size:190,cell:({row}:Any)=>{const k=row.original;const n=k.name||k.id;return <div className="flex gap-1"><Button variant="ghost" size="sm" aria-label={'Usage for '+n} onClick={()=>setUsageKey(k)}>Usage</Button>
+  {id:'actions',header:()=><span className="sr-only">Actions</span>,size:240,cell:({row}:Any)=>{const k=row.original;const n=k.name||k.id;return <div className="flex gap-1"><Button variant="ghost" size="sm" aria-label={'Usage for '+n} onClick={()=>setUsageKey(k)}>Usage</Button>
    {!k.revoked&&<Button variant="ghost" size="sm" className="text-destructive" aria-label={'Revoke '+n} onClick={()=>ask('Revoke “'+n+'”?','It will no longer authenticate.','Revoke',async()=>{await api('/api/keys/'+encodeURIComponent(k.id)+'/revoke',{method:'POST',body:{}});await load();})}>Revoke</Button>}
    <Button variant="ghost" size="sm" className="text-destructive" aria-label={'Delete '+n} onClick={()=>ask('Delete “'+n+'”?','This permanently deletes the key and cannot be undone.','Delete',async()=>{await api('/api/keys/'+encodeURIComponent(k.id),{method:'DELETE'});await load();})}>Delete</Button></div>}},
  ] as Any,[load]);// eslint-disable-line
@@ -243,10 +243,10 @@ const addAccount=()=>act(async()=>{
 
     {admin&&<section id="keys-view" hidden={view!=='keys'} className="space-y-4">
      <div className="flex items-center justify-between gap-3"><p className="text-muted-foreground">A separate key for every person, tool, or project.</p><Button id="add-key" onClick={()=>setKeyOpen(true)} className="rounded-full"><Plus className="size-4"/>Create key</Button></div>
-     <Card className="rounded-2xl"><CardContent className="px-0"><div id="keys"><Grid data={keys.filter(k=>!k.revoked)} columns={keyCols} empty="No access keys yet."/></div></CardContent></Card>
+     <Card className="rounded-2xl"><CardContent className="px-0"><div id="keys"><Grid data={keys.filter(k=>!k.revoked)} columns={keyCols} scrollLabel="Access keys, scroll horizontally for all columns and actions" empty="No access keys yet."/></div></CardContent></Card>
      <details id="deleted-keys" className="rounded-2xl border bg-card">
       <summary className="cursor-pointer px-5 py-4 text-sm font-medium focus-visible:outline focus-visible:outline-2">Deleted keys ({keys.filter(k=>k.revoked).length})</summary>
-      <Grid data={keys.filter(k=>k.revoked)} columns={keyCols} empty="No deleted keys."/>
+      <Grid data={keys.filter(k=>k.revoked)} columns={keyCols} scrollLabel="Deleted keys, scroll horizontally for all columns and actions" empty="No deleted keys."/>
      </details>
     </section>}
    </main>
