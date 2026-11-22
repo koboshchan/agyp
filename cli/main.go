@@ -218,6 +218,7 @@ func (s *shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.Path = strings.TrimRight(u.Path, "/") + r.URL.Path
 	u.RawPath = ""
 	u.RawQuery = r.URL.RawQuery
+	u.ForceQuery = r.URL.ForceQuery
 	s.forward(w, r, &u, s.auth)
 }
 func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *auth) {

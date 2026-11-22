@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createServer,type Server} from 'node:http';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {createServer,request as httpRequest,type Server} from 'node:http';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../server/store.js';
@@ -41,4 +41,16 @@ test('canceling eligibility releases slots even when the shared OAuth refresh ha
   }
   assert.equal(rejectors.length,10);for(const reject of rejectors)reject(new Error('late refresh failure'));await new Promise<void>(r=>setImmediate(r));
  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('zero-budget bootstrap canonical and raw path variants never fall through to generic forwarding',async()=>{
+ const cases=JSON.parse(readFileSync(new URL('./fixtures/bounded-bootstrap-paths.json',import.meta.url),'utf8')) as {path:string;body:string;status:number}[];
+ const dir=mkdtempSync(join(tmpdir(),'agyp-bootstrap-variants-')),store=new Store(dir);let calls=0;
+ const upstream=createServer(async(req,res)=>{calls++;assert.equal(req.url,'/v1internal:loadCodeAssist');let raw='';for await(const c of req)raw+=c;assert.equal(raw,'{"metadata":{"ideType":"ANTIGRAVITY"}}');res.end(JSON.stringify({currentTier:{id:'premium-tier',name:'Pro'},cloudaicompanionProject:'private-project',token:'private-token'}));});
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app}=createApp(store,config),server=createServer(app);config.origin=await listen(server);
+ store.putAccount({id:'a',email:'fake@example.invalid',refresh_token:'fake',access_token:'fake',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
+ const key=store.createKey({name:'zero-budget',allowance:0}),session=store.session(key.key);
+ try{for(const c of cases){const before=calls;const response=await new Promise<{status:number;body:string}>((resolve,reject)=>{const req=httpRequest(config.origin,{method:'POST',path:c.path,headers:{authorization:'Bearer '+session.token,'content-type':'application/json'}},res=>{let body='';res.on('data',chunk=>body+=chunk);res.on('end',()=>resolve({status:res.statusCode!,body}));});req.on('error',reject);req.end(c.body);});assert.equal(response.status,c.status,c.path);assert.doesNotMatch(response.body,/private-project|private-token|cloudaicompanionProject|unapproved/);assert.equal(calls,before+(c.status===200?1:0),c.path);assert.deepEqual({...store.used(key.key)},{input:0,output:0,total:0});}
+ assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });

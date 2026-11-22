@@ -11,7 +11,7 @@ const matrix=JSON.parse(readFileSync(new URL('./fixtures/cloudcode-paths.json',i
 async function listen(s:Server){await new Promise<void>(r=>s.listen(0,'127.0.0.1',r));return 'http://127.0.0.1:'+(s.address() as any).port;}
 async function close(s:Server){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()));}
 test('switcher namespace method matrix is strict, canonical and bounded-control classified',()=>{
- for(const c of matrix){assert.equal(allowedProxy(c.method,c.path),c.allowed,c.method+' '+c.path);if(c.allowed&&!c.path.includes(':generateContent')&&!c.path.includes(':streamGenerateContent')&&!c.path.includes('/v1beta/models/'))assert.equal(boundedControl(c.method,c.path),c.bounded,c.path);}
+ for(const c of matrix){assert.equal(allowedProxy(c.method,c.path),c.allowed,c.method+' '+c.path);if(c.allowed&&c.path!=='/v1internal:loadCodeAssist'&&!c.path.includes(':generateContent')&&!c.path.includes(':streamGenerateContent')&&!c.path.includes('/v1beta/models/'))assert.equal(boundedControl(c.method,c.path),c.bounded,c.path);}
 });
 test('REST full Cloud Code compatibility preserves methods, path/query, request and response bytes; bounded unknown cannot bypass accounting',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'agyp-compat-')),store=new Store(dir);let calls=0,seen:any;

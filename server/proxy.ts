@@ -21,7 +21,7 @@ export function allowedProxy(method:string,path:string){
  return (method==='POST'&&/^\/v1(?:beta)?\/models\/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens)$/.test(p))
  ||(method==='GET'&&/^\/v1(?:beta)?\/models(?:\/[A-Za-z0-9._-]+)?$/.test(p));
 }
-const boundedControls=new Set(['loadCodeAssist','fetchAvailableModels','retrieveUserQuota','retrieveUserQuotaSummary','listExperiments','fetchUserInfo','recordCodeAssistMetrics','countTokens']);
+const boundedControls=new Set(['fetchAvailableModels','retrieveUserQuota','retrieveUserQuotaSummary','listExperiments','fetchUserInfo','recordCodeAssistMetrics','countTokens']);
 export function boundedControl(method:string,path:string){
  const p=path.split('?')[0];
  return method==='POST'&&(boundedControls.has(p.replace(/^\/v1internal:/,''))||/^\/v1(?:beta)?\/models\/[A-Za-z0-9._-]+:countTokens$/.test(p))

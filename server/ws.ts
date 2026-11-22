@@ -111,7 +111,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
     const req={method:p.method,originalUrl:p.path,path:new URL(p.path,'http://local').pathname,headers:Object.fromEntries(Object.entries(p.headers).map(([k,v])=>[k.toLowerCase(),v])),body:Buffer.concat(p.parts)} as Request;
     p.parts=[];
     const job=(boundedKey(key as Key)&&allowedBootstrap(req.method,req.originalUrl)?bootstrap(req,res as unknown as Response,key as Key):proxy(req,res as unknown as Response,key as Key,store,pool)).catch((err:any)=>{
-     if(!res.headersSent&&!res.destroyed)res.status([400,401,403,422,429].includes(err?.status)?err.status:502).json({error:{message:'Request rejected'}});
+     if(!res.headersSent&&!res.destroyed)res.status(err instanceof z.ZodError?400:[400,401,403,413,422,429].includes(err?.status)?err.status:502).json({error:{message:'Request rejected'}});
      else if(!res.writableEnded)res.destroy();
     }).finally(()=>{remove(f.id);jobs.delete(job);});
     jobs.add(job);

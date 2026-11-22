@@ -295,7 +295,7 @@ func (t *wsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if (!inferenceAllowed(req.Method, path) && !(req.Method == "POST" && path == "/v1internal:loadCodeAssist" && req.URL.RawQuery == "")) || req.URL.RawPath != "" {
 		return nil, errors.New("agyp websocket endpoint forbidden")
 	}
-	if req.URL.RawQuery != "" {
+	if req.URL.RawQuery != "" || req.URL.ForceQuery {
 		path += "?" + req.URL.RawQuery
 	}
 	c, e := t.connection(req.Context())

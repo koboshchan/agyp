@@ -9,6 +9,7 @@ import {join} from 'node:path';
 import WebSocket from 'ws';
 import {Store} from '../server/store.js';
 import {createApp} from '../server/app.js';
+import {allowedProxy} from '../server/proxy.js';
 import {attachWebSocket} from '../server/ws.js';
 async function listen(s:Server){await new Promise<void>(r=>s.listen(0,'127.0.0.1',r));return 'http://127.0.0.1:'+(s.address() as any).port;}
 async function close(s:Server){s.closeAllConnections();await new Promise<void>(r=>s.close(()=>r()));}
@@ -115,5 +116,20 @@ test('full Cloud Code namespace matrix over authenticated WS preserves service f
    const bad=new Peer(config.origin);peers.push(bad);await bad.auth(key.token);const closed=once(bad.ws,'close');bad.send({type:'start',id:rid(1),method:c.method,path:c.path,headers:{},deadline:Date.now()+10000});await closed;assert.equal(calls,before,c.path);
   }
   assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('bounded WS bootstrap rejects query and raw variants without private fields or inadmissible dispatch',async()=>{
+ const cases=JSON.parse(readFileSync(new URL('./fixtures/bounded-bootstrap-paths.json',import.meta.url),'utf8')) as {path:string;body:string;status:number}[];
+ const dir=mkdtempSync(join(tmpdir(),'agyp-ws-bootstrap-variants-')),store=new Store(dir);let calls=0;
+ const upstream=createServer(async(req,res)=>{calls++;assert.equal(req.url,'/v1internal:loadCodeAssist');let raw='';for await(const c of req)raw+=c;assert.equal(raw,'{"metadata":{"ideType":"ANTIGRAVITY"}}');res.end(JSON.stringify({currentTier:{id:'premium-tier',name:'Pro'},cloudaicompanionProject:'private-project',token:'private-token'}));});
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app,pool}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
+ store.putAccount({id:'a',email:'fake@example.invalid',refresh_token:'fake',access_token:'fake',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
+ const key=store.createKey({name:'zero-budget',allowance:0}),peers:Peer[]=[];
+ try{for(const c of cases){const p=new Peer(config.origin);peers.push(p);await p.auth(key.token);const before=calls;
+ if(!allowedProxy('POST',c.path)){const closed=once(p.ws,'close');p.send({type:'start',id:rid(1),method:'POST',path:c.path,headers:{},deadline:Date.now()+10000});await closed;}
+ else{start(p,1,c.body,c.path);const response=await result(p);assert.equal(response.status,c.status,c.path);assert.doesNotMatch(response.body,/private-project|private-token|cloudaicompanionProject|unapproved/);}
+ assert.equal(calls,before+(c.status===200?1:0),c.path);assert.deepEqual({...store.used(key.key)},{input:0,output:0,total:0});await p.stop();}
+ assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });

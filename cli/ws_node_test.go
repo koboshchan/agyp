@@ -94,6 +94,45 @@ func TestWSNodeIntegration(t *testing.T) {
 			t.Fatal(w.Body.String())
 		}
 	}
+
+	// Zero-budget bootstrap regression uses a separate authenticated key, but the
+	// actual shim and Go WS client, not just endpoint predicate unit tests.
+	boundedTransport, err := newWSTransport(u, os.Getenv("AGYP_WS_BOUNDED_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer boundedTransport.Close()
+	boundedAuth, err := newAuth(u, os.Getenv("AGYP_WS_BOUNDED_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundedShim := &shim{auth: boundedAuth, http: &http.Client{Transport: boundedTransport}, capability: "bounded-cap"}
+	variants, err := os.ReadFile("../test/fixtures/bounded-bootstrap-paths.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrapCases []struct {
+		Path   string
+		Body   string
+		Status int
+	}
+	if err = json.Unmarshal(variants, &bootstrapCases); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range bootstrapCases {
+		req := httptest.NewRequest("POST", "/bounded-cap"+c.Path, strings.NewReader(c.Body)).WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		boundedShim.ServeHTTP(w, req)
+		if w.Code != c.Status {
+			t.Fatalf("bounded shim %s got%d want%d body%s", c.Path, w.Code, c.Status, w.Body.String())
+		}
+		for _, secret := range []string{"cloudaicompanionProject", "private-project", "private-token", "unapproved"} {
+			if strings.Contains(w.Body.String(), secret) {
+				t.Fatalf("private/bootstrap field leaked for %s", c.Path)
+			}
+		}
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < 4; i++ {
 		wg.Add(1)

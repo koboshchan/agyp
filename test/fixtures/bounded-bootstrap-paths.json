@@ -1,0 +1,57 @@
+[
+  {
+    "path": "/v1internal:loadCodeAssist",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"}}",
+    "status": 200
+  },
+  {
+    "path": "/v1internal:loadCodeAssist",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 400
+  },
+  {
+    "path": "/v1internal:loadCodeAssist?x=1",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal:loadCodeAssist?",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal:loadCodeAssist?alt=json",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal/loadCodeAssist",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal:loadCodeAssist/",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal:loadCodeAssist/extra",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 422
+  },
+  {
+    "path": "/v1internal:loadCodeAssist%3Fx=1",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 403
+  },
+  {
+    "path": "/v1internal:%6coadCodeAssist",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 403
+  },
+  {
+    "path": "/v1internal:x/../loadCodeAssist",
+    "body": "{\"metadata\":{\"ideType\":\"ANTIGRAVITY\"},\"project\":\"unapproved\"}",
+    "status": 403
+  }
+]
