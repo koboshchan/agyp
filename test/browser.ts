@@ -25,6 +25,7 @@ try {
   const suffix = `${device}-${theme}`;
   const screenshot = async (view:string) => {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false, `${view} must not overflow on ${suffix}`);
+    await page.mouse.move(0,0);
     // Check accessible names on the actual visible interactive surface, including
     // icon-only controls. Apple touch targets use the 44 CSS pixel minimum.
     for (const control of await page.locator('button:visible').all()) {
