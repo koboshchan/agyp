@@ -21,7 +21,7 @@ Quotas use the admission window. A request admitted before a UTC reset is charge
 
 Keys with any finite token allowance are text-only for generation. Media and `cachedContent` are rejected until count-safe support exists, and `candidateCount` must be 1. Admission reserves a conservative input upper bound of request-body bytes plus 1024 tokens, along with `maxOutputTokens` for output. A request can be rejected when that upper bound does not fit, even if its eventual token usage would have fit. Reported usage replaces the reservation on completion; if generation usage is missing, the reservation is charged instead of treating the request as free.
 
-Build the CLI with Go 1.23 or later, or use a release archive for Linux amd64/arm64 or macOS arm64 once a release exists.
+Build the CLI with Go 1.23 or later, or use a release archive for Linux amd64/arm64, macOS arm64, or Windows amd64/arm64. Windows archives are ZIP files containing agyp.exe.
 
 ```sh
 (cd cli && go build -trimpath -o ../agyp .)
@@ -30,6 +30,8 @@ read -r -s AGYP_TOKEN
 export AGYP_TOKEN
 ./agyp -- agy
 ```
+
+On Windows, extract the ZIP and run `agyp.exe -- agy` from PowerShell or Git Bash. Set `AGYP_BASE` and `AGYP_TOKEN` only in the current shell process; the CLI does not modify profiles or persist credentials. It shares the caller's console for Ctrl-C/Ctrl-Break, restores console modes, and places its child tree in a private kill-on-close job. Windows ARM64 builds require separate native validation on ARM64 hardware.
 
 The CLI binds an ephemeral loopback listener, authenticates to the server, and launches the supplied command. It sets a per-launch capability-prefixed `CLOUD_CODE_URL` plus authenticated Basic forward-proxy variables, and removes `AGYP_TOKEN` from the child environment. The child must honor those settings. HTTPS CONNECT traffic is tunneled, not decrypted or rewritten; clients that ignore `CLOUD_CODE_URL` and use HTTPS directly may bypass inference routing. Test the actual agy version before relying on this integration.
 
@@ -53,7 +55,7 @@ npm run test:cli
 (cd cli && go vet ./... && go test -race ./...)
 ```
 
-`CHROME_BIN` can select an existing Chromium executable. `test:browser` exercises the mocked UI contract. `test:integration` runs Chromium against the real Express server and SQLite database, and `test:cli` runs the real Go CLI against a fake Google upstream. Both integration suites pass locally; real Google OAuth and the actual agy client remain untested. CI runs these suites, Go vet and race checks, and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
+`CHROME_BIN` can select an existing Chromium executable. `test:browser` exercises the mocked UI contract. `test:integration` runs Chromium against the real Express server and SQLite database, and `test:cli` runs the real Go CLI against a fake Google upstream. Both integration suites pass locally; real Google OAuth and the actual agy client remain untested. CI runs these suites, Go vet and race checks, and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs and two Windows ZIPs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
 
 ### Google request compatibility
 
