@@ -18,7 +18,7 @@ async function close(server:Server) {server.closeAllConnections();await new Prom
 const dir=await mkdtemp(join(tmpdir(),'agyp-browser-'));
 const store=new Store(dir);
 // Real encrypted Store fixtures exercise dense rows without contacting Google.
-for(let i=0;i<8;i++)store.putAccount({id:'table-'+i,email:[user4@example.com',user5@example.com',user1@example.com',user2@example.com',user6@example.com','a.very.long.account.identity.for.ellipsis@example.com',user3@example.com',user7@example.com'][i],refresh_token:'fixture',access_token:'fixture',token_expiry:Date.now()+3600000,status:i===4?'disabled':i===6?'auth_error':'ready',shared:i===3,blocked:i===5,buckets:i===7?[]:[
+for(let i=0;i<8;i++)store.putAccount({id:'table-'+i,email:['user4@example.com','user5@example.com','user1@example.com','user2@example.com','user6@example.com','a.very.long.account.identity.for.ellipsis@example.com','user3@example.com','user7@example.com'][i],refresh_token:'fixture',access_token:'fixture',token_expiry:Date.now()+3600000,status:i===4?'disabled':i===6?'auth_error':'ready',shared:i===3,blocked:i===5,buckets:i===7?[]:[
  ...['gemini','claude'].flatMap((family,j)=>[{family,label:family+' · 5h',remaining:[.92,.38,.05,1,.7,.81,0,.55][i]-(j&&i===0?.28:0),reset:Date.now()+41*60000,disabled:false},{family,label:family+' · weekly',remaining:[.71,.22,.14,1,.4,.66,0,.81][i],reset:Date.now()+3*86400000,disabled:i===2&&j===1}]),
  {family:'argon',label:'Argon · weekly',remaining:.88,reset:Date.now()+5*86400000,disabled:false}],cooldowns:i===2?{claude:Date.now()+60000}:{},denied:{},updated:Date.now()});
 
