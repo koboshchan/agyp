@@ -1,0 +1,375 @@
+// agyp runs an application behind an authenticated, loopback-only Cloud Code shim.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"os/signal"
+	"regexp"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+var keyPattern = regexp.MustCompile(`^agyp_([0-9a-fA-F]{16})\.[A-Za-z0-9_-]+$`)
+var noncePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+func parseBase(raw string) (*url.URL, error) {
+	u, e := url.Parse(raw)
+	if e != nil {
+		return nil, errors.New("invalid AGYP_BASE")
+	}
+	local := u.Hostname() == "localhost" || net.ParseIP(u.Hostname()) != nil && net.ParseIP(u.Hostname()).IsLoopback()
+	if u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && local)) {
+		return nil, errors.New("AGYP_BASE requires HTTPS (HTTP allowed only for loopback development)")
+	}
+	return u, nil
+}
+func client() *http.Client {
+	return &http.Client{Transport: &http.Transport{Proxy: nil, ResponseHeaderTimeout: 30 * time.Second}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+type auth struct {
+	mu             sync.Mutex
+	base           *url.URL
+	key, id, token string
+	expires        time.Time
+	http           *http.Client
+}
+
+func newAuth(base *url.URL, key string) (*auth, error) {
+	m := keyPattern.FindStringSubmatch(key)
+	if m == nil {
+		return nil, errors.New("AGYP_TOKEN must have form agyp_<16hex>.<secret>")
+	}
+	return &auth{base: base, key: key, id: m[1], http: client()}, nil
+}
+
+// expiry accepts ISO dates, Unix seconds and JavaScript milliseconds.
+func expiry(raw json.RawMessage) (time.Time, error) {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return time.Parse(time.RFC3339Nano, s)
+	}
+	var n int64
+	if e := json.Unmarshal(raw, &n); e != nil {
+		return time.Time{}, e
+	}
+	if n > 100000000000 {
+		return time.UnixMilli(n), nil
+	}
+	return time.Unix(n, 0), nil
+}
+func (a *auth) post(ctx context.Context, path string, in, out any) error {
+	b, _ := json.Marshal(in)
+	u := *a.base
+	u.Path = strings.TrimRight(u.Path, "/") + path
+	u.RawPath = ""
+	r, e := http.NewRequestWithContext(ctx, "POST", u.String(), bytes.NewReader(b))
+	if e != nil {
+		return e
+	}
+	r.Header.Set("Content-Type", "application/json")
+	resp, e := a.http.Do(r)
+	if e != nil {
+		return errors.New("authentication transport failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(out)
+}
+func (a *auth) session(ctx context.Context, rejected string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.token != "" && time.Until(a.expires) > 30*time.Second && (rejected == "" || a.token != rejected) {
+		return a.token, nil
+	}
+	var c struct {
+		Nonce   string          `json:"nonce"`
+		Expires json.RawMessage `json:"expires"`
+	}
+	if e := a.post(ctx, "/auth/challenge", map[string]string{"keyId": a.id}, &c); e != nil {
+		return "", e
+	}
+	ex, e := expiry(c.Expires)
+	if e != nil || !ex.After(time.Now()) || !noncePattern.MatchString(c.Nonce) {
+		return "", errors.New("invalid authentication challenge")
+	}
+	mac := hmac.New(sha256.New, []byte(a.key))
+	mac.Write([]byte(c.Nonce))
+	var v struct {
+		Token   string          `json:"token"`
+		Expires json.RawMessage `json:"expires"`
+	}
+	if e = a.post(ctx, "/auth/verify", map[string]string{"keyId": a.id, "nonce": c.Nonce, "proof": hex.EncodeToString(mac.Sum(nil)), "client": "cli"}, &v); e != nil {
+		return "", e
+	}
+	ex, e = expiry(v.Expires)
+	if e != nil || time.Until(ex) <= 30*time.Second || v.Token == "" || strings.ContainsAny(v.Token, "\r\n") {
+		return "", errors.New("invalid authentication session")
+	}
+	a.token = v.Token
+	a.expires = ex
+	return a.token, nil
+}
+
+type shim struct {
+	auth *auth
+	http *http.Client
+}
+
+var hop = []string{"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "TE", "Trailer", "Transfer-Encoding", "Upgrade"}
+
+func clean(h http.Header) {
+	for _, v := range h.Values("Connection") {
+		for _, n := range strings.Split(v, ",") {
+			h.Del(strings.TrimSpace(n))
+		}
+	}
+	for _, n := range hop {
+		h.Del(n)
+	}
+}
+func (s *shim) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "CONNECT" {
+		s.connect(w, r)
+		return
+	}
+	// Absolute-form requests to unrelated HTTP services must remain direct.
+	cloud := !r.URL.IsAbs() || r.URL.Host == r.Host && (r.URL.Hostname() == "127.0.0.1" || r.URL.Hostname() == "localhost" || strings.HasSuffix(r.URL.Hostname(), "cloudcode-pa.googleapis.com"))
+	if !cloud {
+		s.forward(w, r, r.URL, nil)
+		return
+	}
+	u := *s.auth.base
+	u.Path = strings.TrimRight(u.Path, "/") + r.URL.Path
+	u.RawPath = ""
+	u.RawQuery = r.URL.RawQuery
+	s.forward(w, r, &u, s.auth)
+}
+func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *auth) {
+	// Spool to a private, immediately unlinked file for bounded-memory replay of POST bodies.
+	var body *os.File
+	if r.Body != nil && r.Body != http.NoBody {
+		var e error
+		body, e = os.CreateTemp("", "agyp-body-*")
+		if e != nil {
+			http.Error(w, "body spool failed", 502)
+			return
+		}
+		os.Remove(body.Name())
+		defer body.Close()
+		if _, e = io.Copy(body, r.Body); e != nil {
+			http.Error(w, "body read failed", 400)
+			return
+		}
+	}
+	token := ""
+	var e error
+	if a != nil {
+		token, e = a.session(r.Context(), "")
+		if e != nil {
+			http.Error(w, "authentication failed", 502)
+			return
+		}
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		q := r.Clone(r.Context())
+		q.URL = u
+		q.Host = u.Host
+		q.RequestURI = ""
+		q.Header = r.Header.Clone()
+		clean(q.Header)
+		if body != nil {
+			body.Seek(0, 0)
+			q.Body = io.NopCloser(body)
+		}
+		if a != nil {
+			q.Header.Del("Authorization")
+			q.Header.Del("X-Goog-Api-Key")
+			q.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := s.http.Do(q)
+		if err != nil {
+			http.Error(w, "upstream transport failed", 502)
+			return
+		}
+		if a != nil && resp.StatusCode == 401 && attempt == 0 {
+			resp.Body.Close()
+			token, e = a.session(r.Context(), token)
+			if e != nil {
+				http.Error(w, "authentication failed", 502)
+				return
+			}
+			continue
+		}
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 && a != nil {
+			resp.Body.Close()
+			http.Error(w, "upstream redirect rejected", http.StatusBadGateway)
+			return
+		}
+		clean(resp.Header)
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := resp.Body.Read(buf)
+			if n > 0 {
+				if _, e := w.Write(buf[:n]); e != nil {
+					break
+				}
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+		resp.Body.Close()
+		return
+	}
+}
+func (s *shim) connect(w http.ResponseWriter, r *http.Request) {
+	host, port, e := net.SplitHostPort(r.Host)
+	if e != nil || host == "" || port == "" {
+		http.Error(w, "invalid CONNECT target", 400)
+		return
+	}
+	up, e := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(r.Context(), "tcp", r.Host)
+	if e != nil {
+		http.Error(w, "CONNECT failed", 502)
+		return
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		up.Close()
+		http.Error(w, "CONNECT unsupported", 500)
+		return
+	}
+	down, rw, e := hj.Hijack()
+	if e != nil {
+		up.Close()
+		return
+	}
+	defer down.Close()
+	defer up.Close()
+	rw.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+	if rw.Flush() != nil {
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		io.Copy(up, rw)
+		if t, ok := up.(*net.TCPConn); ok {
+			t.CloseWrite()
+		}
+		close(done)
+	}()
+	io.Copy(down, up)
+	down.Close()
+	up.Close()
+	<-done
+}
+func childEnv(env []string, addr string) []string {
+	out := []string{}
+	for _, v := range env {
+		k, _, _ := strings.Cut(v, "=")
+		switch strings.ToUpper(k) {
+		case "AGYP_TOKEN", "CLOUD_CODE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY":
+			continue
+		}
+		out = append(out, v)
+	}
+	return append(out, "CLOUD_CODE_URL="+addr, "HTTP_PROXY="+addr, "HTTPS_PROXY="+addr, "http_proxy="+addr, "https_proxy="+addr, "NO_PROXY=localhost,127.0.0.1,::1,speech.googleapis.com", "no_proxy=localhost,127.0.0.1,::1,speech.googleapis.com")
+}
+func run(args []string) int {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: agyp -- agy [args...]")
+		return 2
+	}
+	base, e := parseBase(os.Getenv("AGYP_BASE"))
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		return 2
+	}
+	a, e := newAuth(base, os.Getenv("AGYP_TOKEN"))
+	os.Unsetenv("AGYP_TOKEN")
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, e = a.session(ctx, "")
+	cancel()
+	if e != nil {
+		fmt.Fprintln(os.Stderr, e)
+		return 1
+	}
+	ln, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		fmt.Fprintln(os.Stderr, "cannot start local proxy")
+		return 1
+	}
+	srv := &http.Server{Handler: &shim{a, client()}, ReadHeaderTimeout: 15 * time.Second}
+	go srv.Serve(ln)
+	defer srv.Close()
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Env = childEnv(os.Environ(), "http://"+ln.Addr().String())
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if e = cmd.Start(); e != nil {
+		fmt.Fprintln(os.Stderr, "cannot start child command")
+		return 1
+	}
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	for {
+		select {
+		case sig := <-signals:
+			if v, ok := sig.(syscall.Signal); ok {
+				syscall.Kill(-cmd.Process.Pid, v)
+			}
+		case e := <-done:
+			if e == nil {
+				return 0
+			}
+			var x *exec.ExitError
+			if errors.As(e, &x) {
+				if st, ok := x.Sys().(syscall.WaitStatus); ok && st.Signaled() {
+					return 128 + int(st.Signal())
+				}
+				return x.ExitCode()
+			}
+			return 1
+		}
+	}
+}
+func main() { os.Exit(run(os.Args[1:])) }
