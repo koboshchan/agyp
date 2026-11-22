@@ -46,11 +46,26 @@ No real credentials, history, config, prompts or network execution were used.
 Original archive URL:
 https://github.com/google-antigravity/antigravity-cli/releases/download/1.5.14/agy_cli_linux_x64.tar.gz
 
-Read-only Go pclntab and ELF disassembly identify:
+Read-only Go pclntab entries in functions.json are relative offsets, not ELF
+virtual addresses. Adding the ELF Go text base 0x72a5080 yields the addresses
+below; each address is cross-checked against its saved disassembly.
 
-* DefaultChatModelConfig at 0x95d04c0 calls GetModelInfoFromKeyWithFallback
-  (0x8446b60) with model key 0x138, then NewChatModelConfig. It does not directly
-  supply a literal maxOutputTokens constant.
+Verified relative entry / symbol / ELF address:
+
+* 0x11a1200 / model_config.DefaultChatModelConfig / 0x8446280
+* 0x11a1ae0 / model_config.GetModelInfoFromKeyWithFallback / 0x8446b60
+* 0x1b1f0c0 / ccpa.BuildRequest / 0x8dc4140
+* 0x1af5c00 / v1main_prediction_service_go_proto.GenerationConfig.GetMaxOutputTokens / 0x8d9ac80
+* 0x1b2db80 / ccpahttp.MarshalRequest / 0x8dd2c00
+
+Observed instructions:
+
+* DefaultChatModelConfig at 0x8446280 loads 0x138 at 0x844628e and
+  0x84462a3, then calls GetModelInfoFromKeyWithFallback at 0x8446299 and
+  0x84462ae. It does not directly supply a literal maxOutputTokens constant.
+  The earlier attribution to 0x95d04c0 was incorrect: that address maps to
+  CodeAssistClient.generateContentFromCCPA.deferwrap1 and its saved disassembly
+  contains an indirect closure call, not model-key/fallback construction.
 * ccpa.BuildRequest at 0x8dc4140 reads a model-derived value from the object's
   offset 0x88 at 0x8dc535e. A model-derived flag gates whether an override is
   consulted. At 0x8dc5374..0x8dc5394 a nonzero ChatNodeConfig
@@ -61,7 +76,7 @@ Read-only Go pclntab and ELF disassembly identify:
   output sentinel on the wire.
 * The generated GenerationConfig.GetMaxOutputTokens at 0x8d9ac80 loads that
   pointer at offset 0x28 and reads its 32-bit value.
-* ccpa.MarshalRequest at 0x8dd2c00 marshals the constructed request using the
+* ccpahttp.MarshalRequest at 0x8dd2c00 marshals the constructed request using the
   protobuf JSON encoder.
 
 Thus construction supports model/config-derived signed int32 values, not a
@@ -73,7 +88,8 @@ or a newly approved observation cannot resolve that unknown by guessing.
 Reproducible local evidence (outside the repo, not a production mount):
 /home/kit/agyp-offline-shape/functions.json
 /home/kit/agyp-offline-shape/ccpa-build.txt
-/home/kit/agyp-offline-shape/disasm-0x95d04c0.txt
+/home/kit/agyp-offline-shape/disasm-0x8446280.txt
+/home/kit/agyp-offline-shape/disasm-0x95d04c0.txt (incorrect prior attribution, retained for audit)
 /home/kit/agyp-offline-shape/convert-0x8dd2c00.txt
 /home/kit/agyp-offline-shape/model-fallback.txt
 
