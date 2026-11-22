@@ -13,7 +13,7 @@ export function allowedProxy(method:string,path:string){
 }
 export function hasMedia(value:any):boolean{
  if(!value||typeof value!=='object')return false;
- return Object.entries(value).some(([key,v])=>['inlineData','fileData','inline_data','file_data'].includes(key)||hasMedia(v));
+ return Object.entries(value).some(([key,v])=>['inlineData','fileData','inline_data','file_data','cachedContent','cached_content'].includes(key)||hasMedia(v));
 }
 export function extractModel(path:string,body:any){
  const byPath=/\/models\/([^/:?]+)/.exec(path)?.[1];
@@ -46,8 +46,11 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
  const bounded=key.allowance!==null||key.inputCap!==null||key.outputCap!==null;
  if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
+ const gc=body?.request?.generationConfig??body?.generationConfig??{};
+ if(generation&&bounded&&((gc.candidateCount??1)!==1||(gc.candidate_count??1)!==1))throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
  const maxOutput=body?.request?.generationConfig?.maxOutputTokens??body?.generationConfig?.maxOutputTokens??65536;
  if(generation&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>131072))throw Object.assign(new Error('maxOutputTokens must be 1..131072'),{status:400});
+ if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??gc.thinking_config?.thinking_budget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
  const input=generation?raw.length+1024:0,output=generation?maxOutput:0;
  const reservation=store.reserve(key,model||'(control)',input,output);
  let final:Usage|undefined,status=502,started=false;
