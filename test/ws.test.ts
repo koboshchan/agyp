@@ -299,3 +299,45 @@ test('uniform exact one-million output ceiling preserves every key budget over a
   reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,1000000);assert.equal(store.used(unlimited.key).input,Buffer.byteLength(raw)+1024);assert.equal(reservations(),0);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('one key admits 17 sockets and 129 simultaneous requests; reconnect is fresh and never replays',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-ws-concurrency-')),store=new Store(dir);
+ const config={origin:'',upstream:'http://127.0.0.1:1',clientId:'',clientSecret:'',secure:false};
+ const {app,pool}=createApp(store,config),server=createServer(app);
+ let dispatched=0,allStarted!:()=>void,release!:()=>void;
+ const began=new Promise<void>(r=>allStarted=r),gate=new Promise<void>(r=>release=r);
+ const bootstrap=async(_req:any,res:any)=>{if(++dispatched===129)allStarted();await gate;res.json({fixture:true});};
+ const transport=attachWebSocket(server,store,pool,bootstrap);config.origin=await listen(server);
+ const key=store.createKey({name:'fixture',allowance:1}),peers:Peer[]=[];
+ try{
+  for(let i=0;i<17;i++){const p=new Peer(config.origin,{localAddress:i<9?'127.0.0.2':'127.0.0.3'});peers.push(p);await p.auth(key.token);}
+  let n=0;const perPeer:number[]=[];
+  for(const p of peers){let count=0;for(let j=0;j<8&&n<129;j++){start(p,++n,'{}','/v1internal:loadCodeAssist');count++;}perPeer.push(count);}
+  await Promise.race([began,new Promise((_,reject)=>{const t=setTimeout(()=>reject(new Error('129 dispatches not admitted')),5000);t.unref();})]);
+  assert.equal(dispatched,129);release();
+  for(let i=0;i<peers.length;i++){
+   const ended=new Set<string>();
+   while(ended.size<perPeer[i]){const frame=await peers[i].next();if(frame.type==='headers')assert.equal(frame.status,200);else if(frame.type==='end'){assert(!ended.has(frame.id));ended.add(frame.id);}else assert.equal(frame.type,'data');}
+  }
+  await Promise.all(peers.map(p=>p.stop()));
+  const fresh=new Peer(config.origin,{localAddress:'127.0.0.4'});peers.push(fresh);await fresh.auth(key.token);
+  assert.equal(dispatched,129,'reconnect does not replay any request');
+  start(fresh,1,'{}','/v1internal:loadCodeAssist');assert.equal((await result(fresh)).status,200);assert.equal(dispatched,130);
+  assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{release();await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('retained global socket 128 and TCP peer 16 caps still reject excess; closed sockets free slots',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-ws-socket-caps-')),store=new Store(dir);
+ const config={origin:'',upstream:'http://127.0.0.1:1',clientId:'',clientSecret:'',secure:false};
+ const {app,pool}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
+ const key=store.createKey({name:'fixture'}),peers:Peer[]=[];
+ const rejected=async(ip:string,status:number)=>{const ws=new WebSocket(config.origin.replace('http','ws')+'/transport','agyp.v1',{localAddress:ip});ws.on('error',()=>{});const [,r]=await once(ws,'unexpected-response') as any;assert.equal(r.statusCode,status);r.resume();ws.terminate();};
+ try{
+  for(let i=0;i<128;i++){const p=new Peer(config.origin,{localAddress:'127.0.0.'+(2+Math.floor(i/16))});peers.push(p);await p.auth(key.token);}
+  await rejected('127.0.0.2',429);
+  await rejected('127.0.0.20',403);
+  await Promise.all(peers.map(p=>p.stop()));
+  const fresh=new Peer(config.origin,{localAddress:'127.0.0.20'});peers.push(fresh);await fresh.auth(key.token);
+ }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);store.close();rmSync(dir,{recursive:true,force:true});}
+});

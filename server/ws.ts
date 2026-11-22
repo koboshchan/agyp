@@ -86,13 +86,13 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
      if(Date.now()>=authExpires)throw new Error('Proof expired');
      const a=authFrame.parse(msg),key=store.key(a.keyId);
      const expected=createHmac('sha256',key?.token??salt).update('agyp-ws-v1\n'+salt+'\n'+nonce).digest();
-     if(!timingSafeEqual(expected,Buffer.from(a.proof,'hex'))||!store.valid(key)||(perKey.get(a.keyId)??0)>=4)throw new Error('Invalid proof');
+     if(!timingSafeEqual(expected,Buffer.from(a.proof,'hex'))||!store.valid(key))throw new Error('Invalid proof');
      keyId=a.keyId;perKey.set(keyId,(perKey.get(keyId)??0)+1);clearTimeout(authTimer);send({type:'ready'});return;
     }
     const key=store.key(keyId);if(!store.valid(key))throw new Error('Key expired or revoked');
     const f=frames.parse(msg);
     if(f.type==='start'){
-     if(seen.has(f.id)||seen.size>=10000||pending.size>=8||active>=128||(!allowedProxy(f.method,f.path)&&!allowedBootstrap(f.method,f.path))||f.deadline<=Date.now()||f.deadline>Date.now()+600000)throw new Error('Request rejected');
+     if(seen.has(f.id)||seen.size>=10000||pending.size>=8||(!allowedProxy(f.method,f.path)&&!allowedBootstrap(f.method,f.path))||f.deadline<=Date.now()||f.deadline>Date.now()+600000)throw new Error('Request rejected');
      seen.add(f.id);
      const timer=setTimeout(()=>{send({type:'error',id:f.id,message:'Request deadline exceeded; not replayed'});remove(f.id,true);},Math.min(600000,f.deadline-Date.now()));timer.unref();
      pending.set(f.id,{method:f.method,path:f.path,headers:f.headers,parts:[],bytes:0,timer});return;
@@ -106,7 +106,6 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
      if(!b.length||p.parts.length>=4096||p.bytes+b.length>MAX_BODY||used+b.length>32*1024*1024||buffered+b.length>64*1024*1024)throw new Error('Request body limit');
      p.parts.push(b);p.bytes+=b.length;used+=b.length;buffered+=b.length;return;
     }
-    if(active>=128)throw new Error('Concurrency limit');
     const res=new SocketResponse(send,f.id);p.res=res;active++;
     // Mark dispatched before invoking the pipeline. There is no resume/replay protocol.
     const req={method:p.method,originalUrl:p.path,path:new URL(p.path,'http://local').pathname,headers:Object.fromEntries(Object.entries(p.headers).map(([k,v])=>[k.toLowerCase(),v])),body:Buffer.concat(p.parts)} as Request;
