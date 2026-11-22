@@ -1,6 +1,6 @@
 agyp keeps a shared Google account pool on one server and connects local agy processes to it. The server is TypeScript on Node.js 24 with SQLite, a browser dashboard, and a Go CLI wrapper. This repository stays private until publication is explicitly approved.
 
-The deployment target is https://agy.kjt.lol. The dashboard, authentication, and inference endpoints share one public HTTPS port. Docker listens internally on 54873; the supplied Compose file exposes it only to the existing `oneserver_bridge` network and does not publish a host port. Configure the HTTPS reverse proxy separately to forward to `agyp:54873`, preserving streaming responses and allowing long requests. Deployment and real-client agy compatibility are not established by the mocked tests.
+The deployment target is https://agy.kjt.lol. The dashboard, authentication, and inference endpoints share one public HTTPS port. Docker listens internally on 54873; the supplied Compose file exposes it only to the existing `oneserver_bridge` network and does not publish a host port. Configure the HTTPS reverse proxy separately to forward to `agyp:54873`, preserving streaming responses and allowing long requests. Private deployment is pending. Real Google OAuth and compatibility with the actual agy client remain untested.
 
 With Docker Compose installed and the external proxy network already present, prepare the server from the repository root.
 
@@ -16,6 +16,10 @@ docker compose logs agyp
 The administrator token is printed on EVERY server startup, including restarts. Treat Docker logs as credentials. Open the public origin and log in with that token. Add Google accounts through the dashboard. With the example loopback OAuth redirect, finish Google consent locally and paste the complete callback URL into the dashboard; no second public port is needed. The redirect must match the Google OAuth client configuration.
 
 Create named user keys in the dashboard. Keys support total, input, and output token allowances, optional expiry, and never/daily/weekly/monthly reset periods. Calendar resets use UTC, with weeks starting Monday. Administrators can manage accounts and keys and inspect per-key/model input, output, cached, and noncached usage. Ordinary keys can view only their own usage. Save a newly created key when it is shown; normal API responses do not reveal it again.
+
+Quotas use the admission window. A request admitted before a UTC reset is charged to that prior window even if it finishes after the reset. In-flight reservations count toward that window's allowance, so concurrent requests cannot spend the same remaining budget.
+
+Keys with any finite token allowance are text-only for generation. Media and `cachedContent` are rejected until count-safe support exists, and `candidateCount` must be 1. Admission reserves a conservative input upper bound of request-body bytes plus 1024 tokens, along with `maxOutputTokens` for output. A request can be rejected when that upper bound does not fit, even if its eventual token usage would have fit. Reported usage replaces the reservation on completion; if generation usage is missing, the reservation is charged instead of treating the request as free.
 
 Build the CLI with Go 1.23 or later, or use a release archive for Linux amd64/arm64 or macOS arm64 once a release exists.
 
@@ -41,7 +45,9 @@ npm run build
 npm test
 npx playwright install --with-deps chromium
 npm run test:browser
-(cd cli && go test -race ./...)
+npm run test:integration
+npm run test:cli
+(cd cli && go vet ./... && go test -race ./...)
 ```
 
-`CHROME_BIN` can select an existing Chromium executable. The browser test exercises a mocked UI contract, not Google OAuth or a live agy client. CI runs Node and Go checks and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
+`CHROME_BIN` can select an existing Chromium executable. `test:browser` exercises the mocked UI contract. `test:integration` runs Chromium against the real Express server and SQLite database, and `test:cli` runs the real Go CLI against a fake Google upstream. Both integration suites pass locally; real Google OAuth and the actual agy client remain untested. CI runs these suites, Go vet and race checks, and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
