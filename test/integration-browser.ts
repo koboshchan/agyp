@@ -25,7 +25,7 @@ const server=createServer(app);
 let browser:Awaited<ReturnType<typeof chromium.launch>>|undefined;
 try {
   await listen(server,port);
-  browser=await chromium.launch({executablePath:process.env.CHROME_BIN||'/opt/hako/bin/google-chrome',args:['--no-sandbox']});
+  browser=await chromium.launch({executablePath:process.env.CHROME_BIN||undefined,args:['--no-sandbox']});
   const context=await browser.newContext();const page=await context.newPage();
   const errors:string[]=[];
   const authRequests:{path:string;body:any;wire:string}[]=[];
