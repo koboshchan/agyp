@@ -48,3 +48,5 @@
 @media (prefers-reduced-transparency:reduce){.glass{background:var(--background);backdrop-filter:none;-webkit-backdrop-filter:none}}
 @media (prefers-contrast:more){:root{--border:#00000066;--input:#00000099;--muted-foreground:#3a3a3c}.dark{--border:#ffffff80;--input:#ffffffb3;--muted-foreground:#d1d1d6}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}button:active:not(:disabled){transform:none}}
+
+#chart{--color-fresh:var(--chart-1);--color-cached:var(--chart-2);--color-output:var(--chart-3)}

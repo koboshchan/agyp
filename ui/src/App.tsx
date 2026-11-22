@@ -133,7 +133,7 @@ export default function App(){
   if(!['localhost','127.0.0.1','[::1]'].includes(u.hostname)||!['http:','https:'].includes(u.protocol))throw new Error('Paste the full localhost address from the Google redirect.');
   await api('/api/oauth/complete',{method:'POST',body:{callbackUrl:cb}});closeOauth(false);notify('Google account connected.');await load();});};
 
- const chartConfig={fresh:{label:'Input',color:'var(--chart-1)'},cached:{label:'Cached input',color:'var(--chart-2)'},output:{label:'Output',color:'var(--chart-3)'}} satisfies ChartConfig;
+ const chartConfig={fresh:{label:'Input'},cached:{label:'Cached input'},output:{label:'Output'}} satisfies ChartConfig;
  const chartData=graph.map(d=>{const i=Math.max(0,Number(d.input)||0),c=Math.min(i,Math.max(0,Number(d.cached)||0));return{day:String(d.day).slice(5),fresh:i-c,cached:c,output:Math.max(0,Number(d.output)||0)};});
 
  const nav:[View,string,ReactNode][]=[['overview','Overview',<Activity key="a" className="size-4"/>],['accounts','Accounts',<Server key="b" className="size-4"/>],['keys','Access keys',<KeyRound key="c" className="size-4"/>]];
