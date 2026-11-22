@@ -236,6 +236,39 @@ class PTYTests(unittest.TestCase):
     def test_ctrl_c_during_verify(self):
         self.blocked_auth("/auth/verify")
 
+    def test_cooked_ctrl_c_is_delivered_once(self):
+        pidfile = self.root / "count.pid"
+        script = r"""
+import os, signal, sys, time
+from pathlib import Path
+Path(sys.argv[1]).write_text(str(os.getpid()))
+count = 0
+def interrupted(signum, frame):
+    global count
+    count += 1
+signal.signal(signal.SIGINT, interrupted)
+print("COUNT_READY", flush=True)
+while not count:
+    time.sleep(.01)
+# Stay alive long enough to catch an incorrectly forwarded duplicate.
+time.sleep(.8)
+print("SIGNAL_COUNT " + str(count), flush=True)
+raise SystemExit(130)
+"""
+        with AuthServer() as auth:
+            terminal = Terminal(self.binary, auth.base, script, pidfile)
+            auth.start()
+            try:
+                terminal.until(b"COUNT_READY")
+                os.write(terminal.fd, b"\x03")
+                self.assertEqual(terminal.wait(), 130, terminal.output)
+                self.assertIn(b"SIGNAL_COUNT 1", terminal.output)
+                self.assert_terminal_restored(terminal)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(terminal.child_pid(), 0)
+            finally:
+                terminal.close()
+
     def test_interactive_child_foreground_and_ctrl_c(self):
         self.interactive_child(raw=False)
 
