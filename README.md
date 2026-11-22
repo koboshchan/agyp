@@ -1,6 +1,6 @@
 agyp keeps a shared Google account pool on one server and connects local agy processes to it. The server is TypeScript on Node.js 24 with SQLite, a browser dashboard, and a Go CLI wrapper. This repository stays private until publication is explicitly approved.
 
-The deployment target is https://agy.kjt.lol. The dashboard, authentication, and inference endpoints share one public HTTPS port. Docker listens internally on 54873; the supplied Compose file exposes it only to the existing `oneserver_bridge` network and does not publish a host port. Configure the HTTPS reverse proxy separately to forward to `agyp:54873`, preserving streaming responses and allowing long requests. Private deployment is pending. Real Google OAuth and compatibility with the actual agy client remain untested.
+The deployment target is https://agy.kjt.lol. The dashboard, authentication, and inference endpoints share one public HTTPS port. Docker listens internally on 54873; the supplied Compose file exposes it only to the existing `oneserver_bridge` network and does not publish a host port. Configure the HTTPS reverse proxy separately to forward to `agyp:54873`, preserving streaming responses and allowing long requests. The private dashboard is deployed. Native Google OAuth and compatibility with the actual agy client still need separate verification.
 
 With Docker Compose installed and the external proxy network already present, prepare the server from the repository root.
 
@@ -52,3 +52,15 @@ npm run test:cli
 ```
 
 `CHROME_BIN` can select an existing Chromium executable. `test:browser` exercises the mocked UI contract. `test:integration` runs Chromium against the real Express server and SQLite database, and `test:cli` runs the real Go CLI against a fake Google upstream. Both integration suites pass locally; real Google OAuth and the actual agy client remain untested. CI runs these suites, Go vet and race checks, and cross-compiles the CLI. Pushing an approved `v*` tag runs those checks again and publishes three CLI tarballs with SHA-256 checksums to a GitHub release. Creating a tag or release does not deploy the server.
+
+### Google request compatibility
+
+The Google routing layer tracks switcher commit `b48b163`: forced refresh and same-account retry on 401, structured verification exclusion and direct quota rechecks, Argon Ultra promotion and Pro weekly-trial fallback, provider-family exhaustion, early cooldown recovery after a healthy quota poll, and reactive Gemini thought-signature repair. Ordinary generation bodies retain their original JSON bytes and user agent. Only a routed model change or a provider-requested signature repair changes the body. The authenticated response header `x-agyp-upstream-model` identifies the selected model without exposing the underlying account.
+
+There is deliberately no default output-token injection. A key with any finite allowance must supply an explicit canonical `generationConfig.maxOutputTokens`; missing bounds return 422 before admission. Unlimited keys may omit it. Bounded keys remain text-only, single-candidate and subject to conservative byte-based input reservation, including any reactive repair. A reset period of `never` means the allowance does not reset, **not** unlimited access. Unlimited allowances are represented by omitted/null caps; a cap of zero allows no spending.
+
+This is not a byte-identical or unrestricted switcher tunnel. The AGYP endpoint/method allowlist, 16 MB request limit, ten-minute deadline, private credential/header filtering, canonical generation envelopes, allowance checks and sanitized provider errors remain intentional security differences. Native Google OAuth and agy-client compatibility require their own real-client checks; fake-upstream tests do not establish either.
+
+The CLI reads `AGYP_BASE` and `AGYP_TOKEN` from the environment, not automatically from a config file. For a private environment file, use `chmod 600 ~/.config/agyp/env` and `set -a; . ~/.config/agyp/env; set +a` before launching it. The currently published CLI does not implement `--version`; a version flag needs a separately approved CLI change and release.
+
+Quota checks use direct Google requests rather than probing a local language server. AGYP additionally rejects explicitly disabled quota buckets, accepts structured subscription notices on HTTP 400 as well as 403, and preserves account status on transient token-refresh failures. These are deliberate differences from the reference implementation. Verification and cooldown observation timestamps are retained in sealed account JSON; healthy polls cannot clear newer failures or re-enable manually disabled accounts.
