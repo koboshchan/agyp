@@ -52,6 +52,7 @@ function QuotaCell({buckets}:{buckets:QuotaBucket[]}){
 export default function App(){
  const [me,setMe]=useState<Any>(null);
  const [stats,setStats]=useState<Any>({});
+ const [usageKey,setUsageKey]=useState<Any>(null);
  const [keys,setKeys]=useState<Any[]>([]);
  const [accounts,setAccounts]=useState<Any[]>([]);
  const [active,setActive]=useState<Record<string,string>>({});
@@ -70,7 +71,7 @@ export default function App(){
  const notify=useCallback((text:string,error=false)=>{setNote({text,error});clearTimeout(noteTimer.current);noteTimer.current=window.setTimeout(()=>setNote(null),error?9000:5000);},[]);
  const lock=useCallback((message?:string)=>{
   const had=!!meRef.current;gen.current++;clearTimeout(noteTimer.current);setNote(null);clearTimeout(sessionTimer.current);setCsrf(undefined);meRef.current=null;
-  setMe(null);setStats({});setKeys([]);setAccounts([]);setActive({});setKeyOpen(false);setSecretOpen(false);setOauthOpen(false);setConfirm(null);
+  setMe(null);setUsageKey(null);setStats({});setKeys([]);setAccounts([]);setActive({});setKeyOpen(false);setSecretOpen(false);setOauthOpen(false);setConfirm(null);
   if(tokenRef.current)tokenRef.current.value='';if(secretRef.current)secretRef.current.value='';if(oauthRef.current)oauthRef.current.value='';
   if(message&&had)notify(message,true);
  },[notify]);
@@ -105,14 +106,15 @@ export default function App(){
  const admin=!!me?.key?.admin;
 
  // ---- derived
- const rows:Any[]=stats.models||[];
+ const rows:Any[]=stats.overview||[];
+ const keyUsage:Any[]=(stats.models||[]).filter((r:Any)=>r.key_id===usageKey?.id&&r.model!=='(control)');
+ const keyControl:Any[]=(stats.models||[]).filter((r:Any)=>r.key_id===usageKey?.id&&r.model==='(control)');
  const sum=(n:string)=>rows.reduce((a,b)=>a+(Number(b[n])||0),0);
  const total=sum('total')||sum('input')+sum('output');
  const graph:Any[]=stats.graph||[];
  const key=me?.key;const used=Number(key?.used?.total)||0;
 
  const modelCols=useMemo<ColumnDef<DataGridFeatures,Any>[]>(()=>[
-  ...(admin?[{accessorKey:'key_id',header:'Key',size:140} as Any]:[]),
   {accessorKey:'model',header:'Model',size:220},
   ...(['input','output','cached','noncached','total','requests'] as const).map(k=>({accessorKey:k,header:k==='noncached'?'Non-cached':k[0].toUpperCase()+k.slice(1),cell:(c:Any)=>full(c.getValue()),meta:{cellClassName:'tabular-nums text-right',headerClassName:'text-right'},size:110})),
  ] as Any,[admin]);
@@ -124,7 +126,7 @@ export default function App(){
   {id:'used',header:'Used',size:100,accessorFn:(k:Any)=>full(k.used?.total)},
   {id:'expires',header:'Expires',size:160,accessorFn:(k:Any)=>when(k.expires)},
   {id:'status',header:'Status',size:100,cell:({row}:Any)=>{const k=row.original;const s=k.revoked?'Revoked':k.expires&&k.expires<Date.now()?'Expired':'Active';return <Badge variant={s==='Active'?'success-light':'destructive-light'}>{s}</Badge>}},
-  {id:'actions',header:()=><span className="sr-only">Actions</span>,size:190,cell:({row}:Any)=>{const k=row.original;const n=k.name||k.id;return <div className="flex gap-1">
+  {id:'actions',header:()=><span className="sr-only">Actions</span>,size:190,cell:({row}:Any)=>{const k=row.original;const n=k.name||k.id;return <div className="flex gap-1"><Button variant="ghost" size="sm" aria-label={'Usage for '+n} onClick={()=>setUsageKey(k)}>Usage</Button>
    {!k.revoked&&<Button variant="ghost" size="sm" className="text-destructive" aria-label={'Revoke '+n} onClick={()=>ask('Revoke “'+n+'”?','It will no longer authenticate.','Revoke',async()=>{await api('/api/keys/'+encodeURIComponent(k.id)+'/revoke',{method:'POST',body:{}});await load();})}>Revoke</Button>}
    <Button variant="ghost" size="sm" className="text-destructive" aria-label={'Delete '+n} onClick={()=>ask('Delete “'+n+'”?','This permanently deletes the key and cannot be undone.','Delete',async()=>{await api('/api/keys/'+encodeURIComponent(k.id),{method:'DELETE'});await load();})}>Delete</Button></div>}},
  ] as Any,[load]);// eslint-disable-line
@@ -206,7 +208,7 @@ const addAccount=()=>act(async()=>{
         <Row k="Output cap" v={key.outputCap==null?'Unlimited':full(key.used?.output)+' / '+full(key.outputCap)}/>
         <Row k="Period" v={key.period||'never'}/><Row k="Next reset" v={when(key.resets)}/><Row k="Key expires" v={when(key.expires)}/></div></CardContent></Card>
      </div>
-     <Card className="rounded-2xl"><CardHeader><CardTitle>Usage by model</CardTitle></CardHeader><CardContent className="px-0"><div id="models"><Grid data={rows} columns={modelCols} empty="No requests yet. Your first request will appear here."/></div></CardContent></Card>
+     <Card className="rounded-2xl"><CardHeader><CardTitle>Usage by model</CardTitle><CardDescription>All-time recorded usage. Cached tokens are included in input, not added again. Requests count recorded entries, including zero-usage responses. Control traffic is separate.</CardDescription></CardHeader><CardContent className="px-0"><div id="models"><Grid data={rows} columns={modelCols} empty="No requests yet. Your first request will appear here."/></div><p className="px-5 pt-3 text-xs text-muted-foreground">Control traffic · {full(stats.control?.requests)} recorded requests · {full(stats.control?.total)} tokens. Not a model.</p></CardContent></Card>
     </section>
 
     {admin&&<section id="accounts-view" hidden={view!=='accounts'} className="space-y-4">
@@ -250,13 +252,19 @@ const addAccount=()=>act(async()=>{
    </main>
   </div>}
 
+  <Dialog open={admin&&!!usageKey} onOpenChange={o=>{if(!o)setUsageKey(null)}}><DialogContent showCloseButton={false} className="max-h-[85dvh] overflow-y-auto sm:max-w-5xl rounded-2xl">
+   <Button className="min-h-11 min-w-11 justify-self-end" variant="outline" onClick={()=>setUsageKey(null)}>Close</Button>
+   <DialogHeader><DialogTitle>Usage for {usageKey?.name||usageKey?.id}</DialogTitle><DialogDescription>All-time recorded usage by exact model. Cached tokens are included in input. Deleted key history is retained.</DialogDescription></DialogHeader>
+   <div className="min-w-0 overflow-x-auto"><Grid data={keyUsage} columns={modelCols} empty="No recorded model requests for this key."/></div>
+   <p className="text-xs text-muted-foreground">Control traffic · {full(keyControl.reduce((n,r)=>n+Number(r.requests),0))} recorded requests · {full(keyControl.reduce((n,r)=>n+Number(r.total),0))} tokens. Not a model.</p>
+  </DialogContent></Dialog>
   <Dialog open={keyOpen} onOpenChange={setKeyOpen}><DialogContent id="key-dialog" keepMounted className="sm:max-w-md rounded-2xl">
    <form id="key-form" onSubmit={submitKey} className="grid gap-4">
     <DialogHeader><DialogTitle>Create access key</DialogTitle><DialogDescription>Give it a name and just the room it needs.</DialogDescription></DialogHeader>
     <div className="grid gap-1.5"><Label htmlFor="key-name">Name</Label><Input id="key-name" name="name" required maxLength={100} placeholder="My workstation" className="h-10"/></div>
     <div className="grid grid-cols-2 gap-3">
      <div className="grid gap-1.5"><Label htmlFor="key-allowance">Total allowance</Label><Input id="key-allowance" name="allowance" type="number" min={0} step={1} placeholder="Unlimited" className="h-10"/></div>
-     <div className="grid gap-1.5"><Label htmlFor="key-period">Resets</Label><select id="key-period" name="period" defaultValue="never" className="h-10 rounded-lg border border-input bg-transparent px-2.5 text-sm"><option value="never">Never</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></div>
+     <div className="grid gap-1.5"><Label htmlFor="key-period">Resets</Label><select id="key-period" name="period" defaultValue="never" className="h-10 rounded-lg border border-input bg-transparent px-2.5 text-sm"><option value="never">Never</option><option value="5h">5 hours · starts on first request</option><option value="weekly">Weekly</option></select></div>
      <div className="grid gap-1.5"><Label htmlFor="key-input">Input cap</Label><Input id="key-input" name="inputCap" type="number" min={0} step={1} placeholder="Unlimited" className="h-10"/></div>
      <div className="grid gap-1.5"><Label htmlFor="key-output">Output cap</Label><Input id="key-output" name="outputCap" type="number" min={0} step={1} placeholder="Unlimited" className="h-10"/></div>
     </div>

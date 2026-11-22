@@ -1,5 +1,5 @@
 // OFFLINE PROPOSAL ONLY. Intentionally not imported by production code.
-// An explicit anchor is required; activation and legacy migration need decisions.
+// An explicit persisted request anchor is required. This is not a migration.
 export const proposedCreationPeriods = ['never','5h','weekly'] as const;
 const FIVE_HOURS = 5 * 60 * 60 * 1000;
 const MAX_DATE = 8_640_000_000_000_000;
@@ -10,7 +10,7 @@ function timestamp(value:number){
 export function proposedFiveHourWindow(now:number,anchor:number){
  timestamp(now);timestamp(anchor);
  if(now<anchor)throw new RangeError('Period anchor is in the future');
- const start=anchor+Math.floor((now-anchor)/FIVE_HOURS)*FIVE_HOURS;
+ const start=now>=anchor+FIVE_HOURS?now:anchor;
  const reset=timestamp(start+FIVE_HOURS);
  return {start,reset};
 }

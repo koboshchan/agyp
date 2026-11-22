@@ -31,6 +31,7 @@ export class Store {
   this.db=new DatabaseSync(join(dir,'agyp.sqlite'));chmodSync(join(dir,'agyp.sqlite'),0o600);
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
  CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY,name TEXT,token TEXT,admin INTEGER,revoked INTEGER DEFAULT 0,expires INTEGER,allowance INTEGER,inputCap INTEGER,outputCap INTEGER,period TEXT,created INTEGER);
+ CREATE TABLE IF NOT EXISTS key_windows(key_id TEXT PRIMARY KEY,anchor INTEGER,accounting_start INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS settings(id TEXT PRIMARY KEY,value TEXT);
  CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,value TEXT);
  CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,key_id TEXT,csrf TEXT,expires INTEGER);
@@ -75,20 +76,41 @@ export class Store {
   const s=this.db.prepare('SELECT * FROM sessions WHERE hash=?').get(digest(token)) as any;
   const k=s?this.key(s.key_id):undefined;return s&&s.expires>Date.now()&&this.valid(k)?{key:k!,csrf:s.csrf as string,expires:s.expires as number}:undefined;
  }
- safeKey(k:Key){const {token,...safe}=k;return {...safe,used:this.used(k),resets:nextReset(k.period)};}
+ keyReset(k:Key,now=Date.now()){if(k.period!=='5h')return nextReset(k.period,now);const w=this.db.prepare('SELECT anchor FROM key_windows WHERE key_id=?').get(k.id) as {anchor:number|null}|undefined;return w?.anchor!=null&&now<w.anchor+18_000_000?w.anchor+18_000_000:null;}
+ safeKey(k:Key){const {token,...safe}=k;return {...safe,used:this.used(k),resets:this.keyReset(k)};}
  keys(){return (this.db.prepare('SELECT * FROM keys ORDER BY created').all() as Key[]).map(k=>this.safeKey(k));}
  revoke(id:string){this.db.prepare('UPDATE keys SET revoked=1 WHERE id=? AND admin=0').run(id);this.db.prepare('DELETE FROM sessions WHERE key_id=?').run(id);}
  deleteKey(id:string){this.revoke(id);this.db.prepare("UPDATE keys SET name='Deleted key' WHERE id=? AND admin=0").run(id);}
- used(k:Key){
-  return this.db.prepare(`SELECT COALESCE(SUM(input),0) input,COALESCE(SUM(output),0) output,COALESCE(SUM(total),0) total FROM usage WHERE key_id=? AND time>=?`).get(k.id,windowStart(k.period)) as {input:number;output:number;total:number};
+ used(k:Key,now=Date.now()){
+  let start=windowStart(k.period,now);
+  if(k.period==='5h'){
+   const w=this.db.prepare('SELECT anchor,accounting_start FROM key_windows WHERE key_id=?').get(k.id) as {anchor:number|null;accounting_start:number}|undefined;
+   if(!w)return {input:0,output:0,total:0};
+   if(w.anchor!==null&&now>=w.anchor+18_000_000)return {input:0,output:0,total:0};
+   start=w.accounting_start;
+  }
+  return this.db.prepare(`SELECT COALESCE(SUM(input),0) input,COALESCE(SUM(output),0) output,COALESCE(SUM(total),0) total FROM usage WHERE key_id=? AND time>=?`).get(k.id,start) as {input:number;output:number;total:number};
  }
  reserve(k:Key,model:string,_input:number,_output:number,admit=true){
-  if(!this.valid(this.key(k.id)))throw Object.assign(new Error('Key expired or revoked'),{status:401});
-  const used=this.used(k);
-  if(admit&&((k.allowance!==null&&used.total>=k.allowance)||(k.inputCap!==null&&used.input>=k.inputCap)||(k.outputCap!==null&&used.output>=k.outputCap)))
-   throw Object.assign(new Error('Token allowance exhausted. Reset: '+(nextReset(k.period)?new Date(nextReset(k.period)!).toISOString():'never')),{status:429});
-  const id=secret();this.db.prepare('INSERT INTO reservations VALUES(?,?,?,?,?,?)').run(id,k.id,model,0,0,Date.now());return id;
+  // One synchronous SQLite write transaction serializes first-request anchoring
+  // and expiry/admission across connections. Control traffic never starts a window.
+  this.db.exec('BEGIN IMMEDIATE');try{
+   const current=this.key(k.id);if(!this.valid(current))throw Object.assign(new Error('Key expired or revoked'),{status:401});
+   const key=current!,now=Date.now();
+   if(admit&&key.period==='5h'){
+    const w=this.db.prepare('SELECT anchor FROM key_windows WHERE key_id=?').get(key.id) as {anchor:number|null}|undefined;
+    if(!w)this.db.prepare('INSERT INTO key_windows VALUES(?,?,?)').run(key.id,now,now);
+    else if(w.anchor===null)this.db.prepare('UPDATE key_windows SET anchor=? WHERE key_id=?').run(now,key.id);
+    else if(now>=w.anchor+18_000_000)this.db.prepare('UPDATE key_windows SET anchor=?,accounting_start=? WHERE key_id=?').run(now,now,key.id);
+   }
+   const used=this.used(key,now),reset=this.keyReset(key,now);
+   if(admit&&((key.allowance!==null&&used.total>=key.allowance)||(key.inputCap!==null&&used.input>=key.inputCap)||(key.outputCap!==null&&used.output>=key.outputCap)))
+    {this.db.exec('COMMIT');throw Object.assign(new Error('Token allowance exhausted. Reset: '+(reset?new Date(reset).toISOString():'never')),{status:429});}
+   const id=secret();this.db.prepare('INSERT INTO reservations VALUES(?,?,?,?,?,?)').run(id,key.id,model,0,0,now);
+   this.db.exec('COMMIT');return id;
+  }catch(e){if(this.db.isTransaction)this.db.exec('ROLLBACK');throw e;}
  }
+
  finish(id:string,u:Usage,status:number){const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as any;if(!r)return;
   this.db.exec('BEGIN IMMEDIATE');try{
    this.db.prepare('INSERT INTO usage(key_id,model,input,output,cached,total,time,status) VALUES(?,?,?,?,?,?,?,?)').run(r.key_id,r.model,u.input,u.output,u.cached,u.total,r.time,status);
@@ -100,7 +122,10 @@ export class Store {
  removeAccount(id:string){this.db.prepare('DELETE FROM accounts WHERE id=?').run(id);}
  stats(keyId?:string){
   const where=keyId?' WHERE key_id=?':'',args=keyId?[keyId]:[];
-  return {models:this.db.prepare('SELECT key_id,model,SUM(input) input,SUM(output) output,SUM(cached) cached,SUM(input-cached) noncached,SUM(total) total,COUNT(*) requests FROM usage'+where+' GROUP BY key_id,model').all(...args),
+  const models=this.db.prepare('SELECT key_id,model,SUM(input) input,SUM(output) output,SUM(cached) cached,SUM(input-cached) noncached,SUM(total) total,COUNT(*) requests'+(keyId?'':',k.name key_name,k.revoked key_revoked')+' FROM usage'+(keyId?'':' LEFT JOIN keys k ON k.id=usage.key_id')+where+' GROUP BY key_id,model ORDER BY key_id,model').all(...args);
+  const overview=this.db.prepare('SELECT model,SUM(input) input,SUM(output) output,SUM(cached) cached,SUM(input-cached) noncached,SUM(total) total,COUNT(*) requests FROM usage'+where+(keyId?" AND":" WHERE")+" model != '(control)' GROUP BY model ORDER BY model").all(...args);
+  const control=this.db.prepare('SELECT COUNT(*) requests,COALESCE(SUM(input),0) input,COALESCE(SUM(output),0) output,COALESCE(SUM(cached),0) cached,COALESCE(SUM(total),0) total FROM usage'+where+(keyId?' AND':' WHERE')+" model = '(control)'").get(...args);
+  return {models,overview,control,
   graph:this.db.prepare("SELECT strftime('%Y-%m-%d',time/1000,'unixepoch') day,SUM(input) input,SUM(output) output,SUM(cached) cached FROM usage"+where+' GROUP BY day ORDER BY day DESC LIMIT 90').all(...args).reverse()};
  }
  close(){this.db.close();}

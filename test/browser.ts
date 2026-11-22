@@ -24,15 +24,15 @@ try {
   const page = await context.newPage();
   const suffix = `${device}-${theme}`;
   const screenshot = async (view:string) => {
+    await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a.effect?.getComputedTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false, `${view} must not overflow on ${suffix}`);
     await page.mouse.move(0,0);
     // Check accessible names on the actual visible interactive surface, including
     // icon-only controls. Apple touch targets use the 44 CSS pixel minimum.
-    for (const control of await page.locator('button:visible').all()) {
+    for (const control of await page.getByRole('button').all()) {
       await expect(control).toHaveAccessibleName(/.+/);
       if (device === 'mobile') {
-        const box=await control.boundingBox();
-        assert.ok(box && box.height>=44 && box.width>=44, `touch target too small on ${view}: ${await control.getAttribute('aria-label') || await control.innerText()}`);
+        await expect.poll(async()=>{const box=await control.boundingBox();return !!box&&box.height>=44&&box.width>=44;},{message:'Touch target at least 44px after entry animation: '+view}).toBe(true);
       }
     }
     // Screenshots only use the fixture responses below, never the live service.
@@ -70,7 +70,7 @@ try {
     if (req.method() !== 'GET') assert.equal(req.headers()['x-csrf-token'],'csrf-test');
     let body: object={};
     if (path==='/api/me') body={key:{...key,admin},csrf:'csrf-test',sessionExpires:Date.now()+expiry};
-    else if(path==='/api/stats') body={models:[{key_id:key.id,model:'<img src=x onerror=alert(1)>',input:20000,output:5000,cached:10000,noncached:10000,total:25000,requests:4}],graph:[{day:'2026-11-21',input:20000,output:5000,cached:10000}]};
+    else if(path==='/api/stats') body={overview:[{model:'<img src=x onerror=alert(1)>',input:20000,output:5000,cached:10000,noncached:10000,total:25000,requests:4}],models:[{key_id:key.id,model:'fixture-high',input:20000,output:5000,cached:10000,noncached:10000,total:25000,requests:4}],control:{requests:10,total:0},graph:[{day:'2026-11-21',input:20000,output:5000,cached:10000}]};
     else if(path==='/api/keys') body=req.method()==='POST'?{key,token:'agyp_1123456789abcdef.new-secret'}:{keys:[key,{...key,id:"fedcba9876543210",name:"Archived fixture",admin:false,revoked:1}]};
     else if(path==='/api/keys/'+key.id+'/revoke') { revoked=true; }
     else if(path==='/api/keys/'+key.id && req.method()==='DELETE') { deleted=true; }
@@ -100,6 +100,10 @@ try {
   assert.ok(await page.locator('#chart svg').count()>=1);
   await screenshot('admin-overview');
   await page.locator('[data-view=keys]:visible').first().click();await screenshot('admin-keys');
+  await page.getByRole('button',{name:'Usage for Workstation',exact:true}).click();
+  const usage=page.getByRole('dialog').filter({hasText:'Usage for Workstation'});
+  await expect(usage).toContainText('fixture-high');await expect(usage).toContainText('25,000');
+  await screenshot('key-usage');await page.keyboard.press('Escape');await expect(usage).toBeHidden();
   await expect(page.locator('#keys')).not.toContainText('Archived fixture');
   await expect(page.locator('#deleted-keys')).not.toHaveAttribute('open');
   await expect(page.locator('#deleted-keys summary')).toHaveText('Deleted keys (1)');
@@ -109,6 +113,7 @@ try {
   await expect(page.locator('#deleted-keys')).toContainText('25,000');
   await screenshot('deleted-keys');
   await page.locator('#deleted-keys summary').click();await page.click('#add-key');await page.fill('#key-name','New key');
+  assert.deepEqual(await page.locator('#key-period option').evaluateAll(options=>options.map(o=>(o as HTMLOptionElement).value)),['never','5h','weekly']);
   await page.click('#key-form button[type=submit]');await page.locator('#secret-dialog').waitFor({state:'visible'});
   assert.match(await page.inputValue('#new-secret'),/new-secret/);
   await page.locator('#secret-dialog').getByRole('button',{name:'Close',exact:true}).click();assert.equal(await page.inputValue('#new-secret'),'');

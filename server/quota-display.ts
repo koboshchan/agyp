@@ -1,14 +1,14 @@
 // Presentation only. Never feed these synthetic fractions into Pool routing,
 // provider eligibility, generation admission, or recorded usage accounting.
-import {Store,nextReset,type Key} from './store.js';
+import {Store,type Key} from './store.js';
 import {family} from './pool.js';
-export type DisplayQuota={fraction:number;capped:boolean;reset?:string};
+export type DisplayQuota={fraction:number;capped:boolean;reset?:string;period?:string};
 export function displayQuota(store:Store,key:Key):DisplayQuota{
  const used=store.used(key),ratios:number[]=[];
  for(const [cap,spent] of [[key.allowance,used.total],[key.inputCap,used.input],[key.outputCap,used.output]] as const)
   if(cap!==null)ratios.push(cap<=0?0:Math.min(1,Math.max(0,(cap-spent)/cap)));
- const reset=nextReset(key.period);
- return {fraction:ratios.length?Math.min(...ratios):1,capped:ratios.length>0,...(reset===null?{}:{reset:new Date(reset).toISOString()})};
+ const reset=store.keyReset(key);
+ return {fraction:ratios.length?Math.min(...ratios):1,capped:ratios.length>0,period:key.period,...(reset===null?{}:{reset:new Date(reset).toISOString()})};
 }
 const object=(v:unknown):v is Record<string,unknown>=>!!v&&typeof v==='object'&&!Array.isArray(v);
 // Keep provider identifiers and capability metadata, but not credentials/identity.
@@ -21,6 +21,10 @@ function groupFraction(name:string,q:DisplayQuota){
  if(/argon|claude|gpt/i.test(name))return 0;
  return /^gemini models$/i.test(name.trim())?q.fraction:0;
 }
+function weeklyBucket(b:Record<string,unknown>){return /weekly|week|wtu/i.test([b.window,b.bucketId,b.displayName,b.quotaDuration==='604800s'?'weekly':''].filter(v=>typeof v==='string').join(' '));}
+function bucketOwn(b:Record<string,unknown>,q:DisplayQuota){return q.period!=='5h'&&q.period!=='weekly'||(weeklyBucket(b)?q.period==='weekly':q.period==='5h');}
+function bucketFraction(b:Record<string,unknown>,q:DisplayQuota,fraction:number){return q.capped&&bucketOwn(b,q)?fraction:1;}
+function bucketReset(b:Record<string,unknown>,q:DisplayQuota){return bucketOwn(b,q)?q.reset:undefined;}
 export function mapQuotaSummary(value:unknown,q:DisplayQuota){
  if(!object(value)||!Array.isArray(value.groups))throw new Error('Invalid quota summary');
  return {...without(value,['groups','buckets']),groups:value.groups.map(g=>{
@@ -30,7 +34,7 @@ export function mapQuotaSummary(value:unknown,q:DisplayQuota){
    if(!object(b))throw new Error('Invalid quota bucket');
    // remainingFraction and remainingAmount are mutually exclusive protobuf arms.
    // Fractions have known units, provider remainingAmount does not. Never emit both.
-   return {...without(b,quotaFields),remainingFraction:fraction,...(q.reset?{resetTime:q.reset}:{})};
+   return {...without(b,quotaFields),remainingFraction:bucketFraction(b,q,fraction),...(bucketReset(b,q)?{resetTime:bucketReset(b,q)}:{})};
   })};
  })};
 }
@@ -47,7 +51,7 @@ export function mapLegacyQuota(value:unknown,q:DisplayQuota){
  if(!object(value)||!Array.isArray(value.buckets))throw new Error('Invalid quota response');
  return {...without(value,['buckets']),buckets:value.buckets.map(b=>{
   if(!object(b))throw new Error('Invalid quota bucket');
-  return {...without(b,quotaFields),remainingFraction:modelFraction(typeof b.modelId==='string'?b.modelId:'',q),...(q.reset?{resetTime:q.reset}:{})};
+  return {...without(b,quotaFields),remainingFraction:bucketFraction(b,q,modelFraction(typeof b.modelId==='string'?b.modelId:'',q)),...(bucketReset(b,q)?{resetTime:bucketReset(b,q)}:{})};
  })};
 }
 // Only discovery metadata passes this filter, never generation response bytes.

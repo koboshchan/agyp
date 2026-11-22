@@ -54,7 +54,7 @@ test('display fraction uses only own recorded usage, minimum binding cap, clamp 
    }
   }
   for(const caps of [{allowance:0},{inputCap:0},{outputCap:0}])assert.equal(displayQuota(s,s.createKey({name:'zero',...caps}).key).fraction,0);
-  const other=s.createKey({name:'other'}).key;assert.deepEqual(displayQuota(s,other),{fraction:1,capped:false});
+  const other=s.createKey({name:'other'}).key;assert.deepEqual(displayQuota(s,other),{fraction:1,capped:false,period:'never'});
   for(const caps of [{allowance:10},{inputCap:10},{outputCap:10}]){
    const k=s.createKey({name:'exact',...caps}).key,id=s.reserve(k,'gemini',0,0);s.finish(id,{input:10,output:10,cached:0,total:20},200);assert.equal(displayQuota(s,k).fraction,0);
   }

@@ -11,7 +11,7 @@ import {boundedKey,proxy} from './proxy.js';
 import {createBootstrap,allowedBootstrap} from './bootstrap.js';
 
 export type Config={origin:string;upstream:string;clientId:string;clientSecret:string;oauthRedirect?:string;secure:boolean;trustedProxy?:string[];loginLimit?:number};
-const keySchema=z.object({name:z.string().trim().min(1).max(100),allowance:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),inputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),outputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),period:z.enum(['never','daily','weekly','monthly']).default('never'),expires:z.number().int().min(1).max(8640000000000000).nullable().default(null)}).strict();
+const keySchema=z.object({name:z.string().trim().min(1).max(100),allowance:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),inputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),outputCap:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).nullable().default(null),period:z.enum(['never','5h','weekly']).default('never'),expires:z.number().int().min(1).max(8640000000000000).nullable().default(null)}).strict();
 export function createApp(store:Store,config:Config){
  const app=express(),pool=new Pool(store,config.upstream,config.clientId,config.clientSecret),bootstrap=createBootstrap(store,pool);
  app.disable('x-powered-by');if(config.trustedProxy?.length)app.set('trust proxy',config.trustedProxy);

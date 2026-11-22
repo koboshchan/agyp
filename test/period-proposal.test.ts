@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {proposedCreationPeriods,proposedFiveHourWindow,proposedWeeklyWindow,proposedRecurringBars} from '../server/period-proposal.js';
 import {windowStart,nextReset} from '../server/store.js';
 const hour=60*60*1000;
-test('creation proposal excludes daily/monthly, without changing runtime creation',()=>{
+test('creation choices exclude daily/monthly',()=>{
  assert.deepEqual(proposedCreationPeriods,['never','5h','weekly']);
 });
 test('5h explicitly anchored fixed windows, boundaries and inactivity',()=>{
@@ -11,7 +11,7 @@ test('5h explicitly anchored fixed windows, boundaries and inactivity',()=>{
  assert.deepEqual(proposedFiveHourWindow(anchor,anchor),{start:anchor,reset:anchor+5*hour});
  assert.deepEqual(proposedFiveHourWindow(anchor+5*hour-1,anchor),{start:anchor,reset:anchor+5*hour});
  assert.deepEqual(proposedFiveHourWindow(anchor+5*hour,anchor),{start:anchor+5*hour,reset:anchor+10*hour});
- assert.deepEqual(proposedFiveHourWindow(anchor+105*hour,anchor),{start:anchor+105*hour,reset:anchor+110*hour});
+ assert.deepEqual(proposedFiveHourWindow(anchor+105*hour+123,anchor),{start:anchor+105*hour+123,reset:anchor+110*hour+123});
  assert.throws(()=>proposedFiveHourWindow(anchor-1,anchor));
  for(const bad of [NaN,Infinity,-1,1.5,Number.MAX_SAFE_INTEGER])assert.throws(()=>proposedFiveHourWindow(bad,0));
  assert.throws(()=>proposedFiveHourWindow(anchor,undefined as unknown as number));
