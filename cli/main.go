@@ -19,12 +19,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -379,44 +377,6 @@ func debugPhase(phase string) {
 	}
 }
 
-// terminalDeliveredInterrupt reports whether the foreground terminal already
-// delivered SIGINT to both us and the child. os/signal does not expose siginfo,
-// so a PID-directed SIGINT in the same cooked-terminal state is indistinguishable;
-// the bounded shutdown below still guarantees it cannot leave a stuck child.
-func terminalDeliveredInterrupt(child *os.Process) bool {
-	group, err := syscall.Getpgid(child.Pid)
-	if err != nil || group != syscall.Getpgrp() {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	stty := exec.CommandContext(ctx, "stty", "-a")
-	stty.Stdin = os.Stdin
-	state, err := stty.Output()
-	if err != nil {
-		return false
-	}
-	isig := false
-	for _, field := range strings.Fields(string(state)) {
-		if strings.Trim(field, ";") == "isig" {
-			isig = true
-		}
-	}
-	if !isig {
-		return false
-	}
-	// ps exposes the controlling terminal's foreground pgid on Linux and macOS,
-	// without platform-specific ioctl structures or unsafe pointers.
-	ps := exec.CommandContext(ctx, "ps", "-o", "tpgid=", "-p", fmt.Sprint(os.Getpid()))
-	out, err := ps.Output()
-	if err != nil {
-		return false
-	}
-	var foreground int
-	_, err = fmt.Sscan(string(out), &foreground)
-	return err == nil && foreground == group
-}
-
 func run(args []string) int {
 	if len(args) == 1 && args[0] == "--version" {
 		fmt.Fprintln(os.Stdout, "agyp "+version)
@@ -446,8 +406,8 @@ func run(args []string) int {
 	root, interrupt := context.WithCancel(context.Background())
 	defer interrupt()
 	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
+	notifySignals(signals)
+	defer stopSignals(signals)
 	var interrupted atomic.Int32
 	var processMu sync.Mutex
 	var process *os.Process
@@ -456,13 +416,13 @@ func run(args []string) int {
 	go func() {
 		select {
 		case sig := <-signals:
-			v := sig.(syscall.Signal)
-			interrupted.Store(int32(v))
+			v := signalNumber(sig)
+			interrupted.Store(v)
 			interrupt()
 			processMu.Lock()
 			child := process
-			if child != nil && (v != syscall.SIGINT || !terminalDeliveredInterrupt(child)) {
-				_ = child.Signal(v)
+			if child != nil {
+				forwardSignal(child, sig)
 			}
 			processMu.Unlock()
 			if child != nil {
@@ -517,15 +477,13 @@ func run(args []string) int {
 	cmd.Stderr = os.Stderr
 	// Snapshot terminal settings before the TUI enters raw mode. Restore even
 	// when an unresponsive child needs forced termination.
-	stty := exec.Command("stty", "-g")
-	stty.Stdin = os.Stdin
-	if state, err := stty.Output(); err == nil {
-		defer func() {
-			restore := exec.Command("stty", strings.TrimSpace(string(state)))
-			restore.Stdin = os.Stdin
-			_ = restore.Run()
-		}()
+	defer restoreTerminal()()
+	cleanupChild, setupErr := prepareChild(cmd)
+	if setupErr != nil {
+		fmt.Fprintln(os.Stderr, "cannot prepare child containment")
+		return 1
 	}
+	defer cleanupChild()
 	processMu.Lock()
 	if n := interrupted.Load(); n != 0 {
 		processMu.Unlock()
@@ -533,6 +491,12 @@ func run(args []string) int {
 	}
 	debugPhase("child_start")
 	e = cmd.Start()
+	if e == nil {
+		if e = containChild(cmd); e != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
 	if e == nil {
 		process = cmd.Process
 		debugPhase("child_started")
@@ -555,8 +519,8 @@ func run(args []string) int {
 			}
 			var x *exec.ExitError
 			if errors.As(e, &x) {
-				if st, ok := x.Sys().(syscall.WaitStatus); ok && st.Signaled() {
-					return 128 + int(st.Signal())
+				if n := childSignalExit(x); n != 0 {
+					return n
 				}
 				return x.ExitCode()
 			}
