@@ -117,21 +117,22 @@ export default function App(){
  ] as Any,[load]);// eslint-disable-line
 
  const submitKey=(e:FormEvent<HTMLFormElement>)=>{e.preventDefault();const f=e.currentTarget,g=(n:string)=>(f.elements.namedItem(n) as HTMLInputElement).value;const o=(n:string)=>g(n)===''?null:Number(g(n));
-  act(async()=>{const r=await api('/api/keys',{method:'POST',body:{name:g('name').trim(),allowance:o('allowance'),inputCap:o('inputCap'),outputCap:o('outputCap'),period:g('period'),expires:g('expires')?new Date(g('expires')).getTime():null}});
+  act(async()=>{const ep=gen.current;const r=await api('/api/keys',{method:'POST',body:{name:g('name').trim(),allowance:o('allowance'),inputCap:o('inputCap'),outputCap:o('outputCap'),period:g('period'),expires:g('expires')?new Date(g('expires')).getTime():null}});
+   if(ep!==gen.current){f.reset();return;}
    f.reset();setKeyOpen(false);if(secretRef.current)secretRef.current.value=r.token;setSecretOpen(true);await load();});};
  const closeSecret=(o:boolean)=>{setSecretOpen(o);if(!o&&secretRef.current)secretRef.current.value='';};
  const closeOauth=(o:boolean)=>{setOauthOpen(o);if(!o&&oauthRef.current)oauthRef.current.value='';};
  const copySecret=()=>act(async()=>{try{await navigator.clipboard.writeText(secretRef.current?.value??'');notify('Key copied. Keep it somewhere safe.');}catch{secretRef.current?.focus();secretRef.current?.select();notify('Select and copy the key manually.');}});
- const addAccount=()=>act(async()=>{
-  const popup=window.open('about:blank','agyp-google','popup,width=560,height=760');
-  try{const r=await api('/api/oauth/start',{method:'POST',body:{}});const u=new URL(r.url);
+const addAccount=()=>act(async()=>{
+  const g=gen.current;const popup=window.open('about:blank','agyp-google','popup,width=560,height=760');
+  try{const r=await api('/api/oauth/start',{method:'POST',body:{}});if(g!==gen.current){popup?.close();return;}const u=new URL(r.url);
    if(u.protocol!=='https:'||u.hostname!=='accounts.google.com')throw new Error('The server returned an unexpected sign-in address.');
    if(popup){popup.opener=null;popup.location.href=u.href;}else window.location.assign(u.href);
    if(r.manual)setOauthOpen(true);else notify('Complete Google sign-in, then refresh your accounts.');
-  }catch(e){popup?.close();throw e;}});
- const submitOauth=(e:FormEvent)=>{e.preventDefault();act(async()=>{const cb=(oauthRef.current?.value??'').trim();const u=new URL(cb);
+  }catch(e){popup?.close();if(g!==gen.current)return;throw e;}});
+ const submitOauth=(e:FormEvent)=>{e.preventDefault();act(async()=>{const g=gen.current;const cb=(oauthRef.current?.value??'').trim();const u=new URL(cb);
   if(!['localhost','127.0.0.1','[::1]'].includes(u.hostname)||!['http:','https:'].includes(u.protocol))throw new Error('Paste the full localhost address from the Google redirect.');
-  await api('/api/oauth/complete',{method:'POST',body:{callbackUrl:cb}});closeOauth(false);notify('Google account connected.');await load();});};
+  await api('/api/oauth/complete',{method:'POST',body:{callbackUrl:cb}});if(g!==gen.current)return;closeOauth(false);notify('Google account connected.');await load();});};
 
  const chartConfig={fresh:{label:'Input'},cached:{label:'Cached input'},output:{label:'Output'}} satisfies ChartConfig;
  const chartData=graph.map(d=>{const i=Math.max(0,Number(d.input)||0),c=Math.min(i,Math.max(0,Number(d.cached)||0));return{day:String(d.day).slice(5),fresh:i-c,cached:c,output:Math.max(0,Number(d.output)||0)};});
