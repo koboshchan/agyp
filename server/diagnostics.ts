@@ -1,5 +1,5 @@
-// Explicitly injected local test instrumentation. Never enabled by main/app or an
-// environment variable. No filesystem/stdout sink, request values or user IDs.
+// Admission metadata only. Activation is explicit, time-limited and default off.
+// No request values, user IDs, headers or arbitrary field names are retained.
 import {randomUUID} from 'node:crypto';
 export const admissionReasons=['model_conflict','invalid_json','invalid_root','missing_model','missing_request','mixed_envelope','nested_envelope','noncanonical_config','invalid_config','invalid_output_bound','invalid_bootstrap'] as const;
 export type AdmissionReason=typeof admissionReasons[number];
@@ -42,16 +42,22 @@ export function admissionShape(raw:Buffer){
  }
  visit(body,'',0);return {rootType,fields,unknownKeys,truncated};
 }
-export type AdmissionRecord={v:1;correlationId:string;method:string;path:string;reason:AdmissionReason;shape:ReturnType<typeof admissionShape>};
+export type AdmissionRecord={v:1;correlationId:string;method:string;path:string;reason:AdmissionReason;source:'proxy_admission'|'bootstrap_admission';shape:ReturnType<typeof admissionShape>};
 export class LocalAdmissionDiagnostics {
  // At most 32 small immutable serialized records, memory only. Consumers get copies.
- private records:string[]=[];
+ private records:{line:string;expires:number}[]=[];
+ private stopped=false;private sampled=0;
+ constructor(private now:()=>number=Date.now,private until=Number.POSITIVE_INFINITY){}
+ stop(){this.stopped=true;this.records=[];}
+ expire(){this.prune();}
+ private prune(){if(this.now()>=this.until)this.stop();this.records=this.records.filter(r=>r.expires>this.now());}
  record(method:string,path:string,raw:Buffer,reason:AdmissionReason){
-  if(!admissionReasons.includes(reason))return;
+  this.prune();if(this.stopped||this.sampled>=64||!admissionReasons.includes(reason))return;
+  this.sampled++;
   const cleanPath=path.split('?')[0];
-  const record:AdmissionRecord={v:1,correlationId:randomUUID(),method:methods.has(method)?method:'other',path:paths.has(cleanPath)?cleanPath:'other',reason,shape:admissionShape(raw)};
+  const record:AdmissionRecord={v:1,correlationId:randomUUID(),method:methods.has(method)?method:'other',path:paths.has(cleanPath)?cleanPath:'other',reason,source:reason==='invalid_bootstrap'?'bootstrap_admission':'proxy_admission',shape:admissionShape(raw)};
   const line=JSON.stringify(record);if(Buffer.byteLength(line)>8192)return;
-  this.records.push(line);if(this.records.length>32)this.records.shift();return record.correlationId;
+  this.records.push({line,expires:Math.min(this.until,this.now()+120_000)});if(this.records.length>32)this.records.shift();return record.correlationId;
  }
- snapshot():AdmissionRecord[]{return this.records.map(s=>JSON.parse(s));}
+ snapshot():AdmissionRecord[]{this.prune();return this.records.map(s=>JSON.parse(s.line));}
 }

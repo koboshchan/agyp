@@ -23,6 +23,7 @@ ENV NODE_ENV=production PORT=54873 DATA_DIR=/app/data
 WORKDIR /app
 COPY --from=production-deps --chown=node:node /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
+COPY --chown=node:node scripts/admission-diagnostics.mjs ./scripts/admission-diagnostics.mjs
 COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=web-build --chown=node:node /app/web ./web
 RUN install -d -m 0700 -o node -g node /app/data

@@ -35,6 +35,7 @@ test('websocket proof, exact proxy pipeline, allowance, usage, per-request revoc
   const key=store.createKey({name:'ws'}),p=make();await p.auth(key.token);
   const raw='{ "model":"gemini-flash", "request":{"contents":[{"parts":[{"text":"雪"}]}]}, "n":1e+05 }';
   start(p,1,raw);let r=await result(p);assert.equal(r.status,200);assert(r.body.includes('OK'));assert.equal(rawSeen,raw);assert.equal(ua,'unchanged-client');assert.equal(store.used(key.key).total,3);assert.equal(calls,1);
+  start(p,90,'{}');r=await result(p);assert.equal(r.status,400);assert.deepEqual(JSON.parse(r.body),{error:{message:'Request rejected'}});assert.equal(calls,1);assert.equal(store.used(key.key).total,3);
   const bounded=store.createKey({name:'bounded',allowance:10000}),q=make();await q.auth(bounded.token);
   start(q,1,raw);r=await result(q);assert.equal(r.status,422);assert.equal(calls,1);assert.equal(store.used(bounded.key).total,0);
   start(q,2,JSON.stringify({model:'gemini-flash',request:{generationConfig:{maxOutputTokens:10}}}));r=await result(q);assert.equal(r.status,200);assert.equal(store.used(bounded.key).total,3);assert.equal(calls,2);
@@ -159,9 +160,11 @@ test('every generation admission 400 has bounded value-free local diagnostics an
  ];
  try{
   await p.auth(key.token);await q.auth(bounded.token);
+  const unauthorized=new Peer(config.origin);const challenge=await unauthorized.next();unauthorized.send({type:'auth',keyId:key.key.id,proof:'0'.repeat(64)});await once(unauthorized.ws,'close');assert.equal(diagnostics.snapshot().length,0);assert.equal(calls,0);
   const ids=new Set<string>();
   for(const [reason,raw,path] of cases){
    const before=calls;start(p,++n,raw,path);const r=await result(p);assert.equal(r.status,400,reason);const cid=JSON.parse(r.body).error.correlationId;assert.match(cid,/^[a-f0-9-]{36}$/);assert(!ids.has(cid));ids.add(cid);
+   assert(JSON.parse(r.body).error.message.includes(cid));
    const record=diagnostics.snapshot().at(-1)!;assert.equal(record.reason,reason);assert.equal(record.correlationId,cid);assert.equal(calls,before);assert.deepEqual({...store.used(key.key)},{input:0,output:0,total:0});assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
    assert.doesNotMatch(JSON.stringify(record),/CANARY|gemini-flash|fake/);
   }
