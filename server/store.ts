@@ -1,9 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, createHash, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomBytes, createHash, createHmac, timingSafeEqual, createCipheriv, createDecipheriv } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 
-export type Key = {id:string; name:string; hash:string; admin:number; revoked:number; expires:number|null; allowance:number|null; inputCap:number|null; outputCap:number|null; period:string; created:number};
+export type Key = {id:string; name:string; token:string; admin:number; revoked:number; expires:number|null; allowance:number|null; inputCap:number|null; outputCap:number|null; period:string; created:number};
 export type Account = {id:string; email:string; refresh_token:string; access_token:string; token_expiry:number; status:string; shared:boolean; blocked:boolean; buckets:any[]; cooldowns:Record<string,number>; denied:Record<string,number>; updated:number};
 export type Usage = {input:number; output:number; cached:number; total:number};
 export const digest=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -30,32 +30,52 @@ export class Store {
   this.master=readFileSync(path);chmodSync(path,0o600);
   this.db=new DatabaseSync(join(dir,'agyp.sqlite'));chmodSync(join(dir,'agyp.sqlite'),0o600);
   this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
- CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY,name TEXT,hash TEXT,admin INTEGER,revoked INTEGER DEFAULT 0,expires INTEGER,allowance INTEGER,inputCap INTEGER,outputCap INTEGER,period TEXT,created INTEGER);
+ CREATE TABLE IF NOT EXISTS keys(id TEXT PRIMARY KEY,name TEXT,token TEXT,admin INTEGER,revoked INTEGER DEFAULT 0,expires INTEGER,allowance INTEGER,inputCap INTEGER,outputCap INTEGER,period TEXT,created INTEGER);
  CREATE TABLE IF NOT EXISTS settings(id TEXT PRIMARY KEY,value TEXT);
  CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,value TEXT);
  CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,key_id TEXT,csrf TEXT,expires INTEGER);
  CREATE TABLE IF NOT EXISTS usage(id INTEGER PRIMARY KEY,key_id TEXT,model TEXT,input INTEGER,output INTEGER,cached INTEGER,total INTEGER,time INTEGER,status INTEGER);
  CREATE INDEX IF NOT EXISTS usage_key_time ON usage(key_id,time);
  CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY,key_id TEXT,model TEXT,input INTEGER,output INTEGER,time INTEGER);
+ CREATE TABLE IF NOT EXISTS challenges(nonce TEXT PRIMARY KEY,key_id TEXT,expires INTEGER);
  CREATE TABLE IF NOT EXISTS oauth(state TEXT PRIMARY KEY,session_hash TEXT,verifier TEXT,redirect TEXT,expires INTEGER);
  `);
   // Crash-interrupted requests remain charged at their admission bound, never silently free.
   this.db.exec(`INSERT INTO usage(key_id,model,input,output,cached,total,time,status) SELECT key_id,model,input,output,0,input+output,time,599 FROM reservations; DELETE FROM reservations;`);
-  const sealed=this.db.prepare("SELECT value FROM settings WHERE id='admin'").get() as any;
-  if(sealed)this.adminToken=this.open(sealed.value);
-  else {const k=this.createKey({name:'Administrator',admin:1});this.adminToken=k.token;this.db.prepare("INSERT INTO settings VALUES('admin',?)").run(this.seal(k.token));}
+  const admin=this.db.prepare('SELECT token FROM keys WHERE admin=1').get() as any;
+  this.adminToken=admin?.token??this.createKey({name:'Administrator',admin:1}).token;
  }
  seal(s:string){const iv=randomBytes(12),c=createCipheriv('aes-256-gcm',this.master,iv);const data=Buffer.concat([c.update(s,'utf8'),c.final()]);return Buffer.concat([iv,c.getAuthTag(),data]).toString('base64');}
  open(s:string){const b=Buffer.from(s,'base64'),d=createDecipheriv('aes-256-gcm',this.master,b.subarray(0,12));d.setAuthTag(b.subarray(12,28));return Buffer.concat([d.update(b.subarray(28)),d.final()]).toString('utf8');}
  createKey(o:Partial<Key> & {name:string}){
   const id=randomBytes(8).toString('hex'),token='agyp_'+id+'.'+secret();
-  this.db.prepare('INSERT INTO keys VALUES(?,?,?,?,0,?,?,?,?,?,?)').run(id,o.name,digest(token),o.admin??0,o.expires??null,o.allowance??null,o.inputCap??null,o.outputCap??null,o.period??'never',Date.now());
+  this.db.prepare('INSERT INTO keys VALUES(?,?,?,?,0,?,?,?,?,?,?)').run(id,o.name,token,o.admin??0,o.expires??null,o.allowance??null,o.inputCap??null,o.outputCap??null,o.period??'never',Date.now());
   return {token,key:this.key(id)!};
  }
  key(id:string){return this.db.prepare('SELECT * FROM keys WHERE id=?').get(id) as Key|undefined;}
  valid(k:Key|undefined){return !!k&&!k.revoked&&(!k.expires||k.expires>Date.now());}
- auth(token:string){const id=/^agyp_([a-f0-9]{16})\.[\w-]{43}$/.exec(token)?.[1]??''; const k=this.key(id);const ok=equal(digest(token),k?.hash??'0'.repeat(64));return ok&&this.valid(k)?k:undefined;}
- safeKey(k:Key){const {hash,...safe}=k;return {...safe,used:this.used(k),resets:nextReset(k.period)};}
+ challenge(id:string){
+  this.db.prepare('DELETE FROM challenges WHERE expires<=?').run(Date.now());
+  const nonce=secret(),expires=Date.now()+60_000;
+  this.db.prepare('INSERT INTO challenges VALUES(?,?,?)').run(nonce,id,expires);
+  return {nonce,expires};
+ }
+ verify(id:string,nonce:string,proof:string){
+  const c=this.db.prepare('DELETE FROM challenges WHERE nonce=? RETURNING *').get(nonce) as any;
+  const k=this.key(id),expected=createHmac('sha256',k?.token??this.master).update(nonce).digest('hex');
+  const matches=equal(expected,/^[a-f0-9]{64}$/.test(proof)?proof:'0'.repeat(64));
+  return matches&&c&&c.key_id===id&&c.expires>Date.now()&&this.valid(k)?k:undefined;
+ }
+ session(k:Key){
+  this.db.prepare('DELETE FROM sessions WHERE expires<=?').run(Date.now());
+  const token=secret(),csrf=secret(),expires=Math.min(Date.now()+15*60_000,k.expires??Infinity);
+  this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').run(digest(token),k.id,csrf,expires);return {token,csrf,expires};
+ }
+ authSession(token:string){
+  const s=this.db.prepare('SELECT * FROM sessions WHERE hash=?').get(digest(token)) as any;
+  const k=s?this.key(s.key_id):undefined;return s&&s.expires>Date.now()&&this.valid(k)?{key:k!,csrf:s.csrf as string,expires:s.expires as number}:undefined;
+ }
+ safeKey(k:Key){const {token,...safe}=k;return {...safe,used:this.used(k),resets:nextReset(k.period)};}
  keys(){return (this.db.prepare('SELECT * FROM keys ORDER BY created').all() as Key[]).map(k=>this.safeKey(k));}
  revoke(id:string){this.db.prepare('UPDATE keys SET revoked=1 WHERE id=? AND admin=0').run(id);this.db.prepare('DELETE FROM sessions WHERE key_id=?').run(id);}
  deleteKey(id:string){this.revoke(id);this.db.prepare("UPDATE keys SET name='Deleted key' WHERE id=? AND admin=0").run(id);}
@@ -73,7 +93,7 @@ export class Store {
  }
  finish(id:string,u:Usage,status:number){const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as any;if(!r)return;
   this.db.exec('BEGIN IMMEDIATE');try{
-   this.db.prepare('INSERT INTO usage(key_id,model,input,output,cached,total,time,status) VALUES(?,?,?,?,?,?,?,?,?)').run(r.key_id,r.model,u.input,u.output,u.cached,u.total,r.time,status);
+   this.db.prepare('INSERT INTO usage(key_id,model,input,output,cached,total,time,status) VALUES(?,?,?,?,?,?,?,?)').run(r.key_id,r.model,u.input,u.output,u.cached,u.total,r.time,status);
    this.db.prepare('DELETE FROM reservations WHERE id=?').run(id);this.db.exec('COMMIT');
   }catch(e){this.db.exec('ROLLBACK');throw e;}
  }
