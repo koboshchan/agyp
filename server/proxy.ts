@@ -7,6 +7,7 @@ import {Store,type Key,type Usage} from './store.js';
 import {once} from 'node:events';
 import {abortable} from './bootstrap.js';
 import {admissionError} from './diagnostics.js';
+import {quotaDisplayAction,displayQuota,mapQuotaDisplay} from './quota-display.js';
 
 const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie','x-goog-api-key','x-client-secret']);
 // The switcher handler forwards the request method/path without an RPC allowlist
@@ -144,6 +145,17 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
     await readBounded(upstream,1_048_576);
     status=upstream.status;final={input:0,output:0,cached:0,total:0};
     res.status(status).json({error:{message:'Upstream request rejected',code:status}});return;
+   }
+   const displayAction=quotaDisplayAction(req.method,req.originalUrl);
+   if(displayAction){
+    // Shared REST/WSS presentation layer. Buffer only these bounded JSON control
+    // replies; generation/SSE bytes and real usageMetadata remain untouched.
+    const chunks:Uint8Array[]=[];let bytes=0;
+    if(upstream.body)for await(const chunk of upstream.body){bytes+=chunk.length;if(bytes>8_388_608)throw new Error('Quota response too large');chunks.push(chunk);}
+    const current=store.key(key.id);if(!store.valid(current))throw new Error('Key expired or revoked');
+    const mapped=mapQuotaDisplay(displayAction,JSON.parse(Buffer.concat(chunks).toString()),displayQuota(store,current!));
+    status=upstream.status;final={input:0,output:0,cached:0,total:0};
+    res.status(status).json(mapped);return;
    }
    status=upstream.status;res.status(status);
    const responseConnection=(upstream.headers.get('connection')??'').split(',').map(x=>x.trim());

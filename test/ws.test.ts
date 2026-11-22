@@ -92,7 +92,8 @@ test('full Cloud Code namespace matrix over authenticated WS preserves service f
  const matrix=JSON.parse(readFileSync(new URL('./fixtures/cloudcode-paths.json',import.meta.url),'utf8')) as {method:string;path:string;allowed:boolean;bounded:boolean}[];
  const dir=mkdtempSync(join(tmpdir(),'agyp-ws-compat-')),store=new Store(dir);let calls=0,seen:any;
  const reply='{ "cloudaicompanionProject":"fixture-project", "operation":{"name":"fixture-op"}, "unknownField":true }';
- const upstream=createServer(async(req,res)=>{calls++;let body='';for await(const c of req)body+=c;seen={method:req.method,path:req.url,body};assert.equal(req.headers.authorization,'Bearer fixture-access');res.setHeader('content-type','application/json');res.end(reply);});
+ const displayReply=(path:string)=>path==='/v1internal:retrieveUserQuotaSummary'?'{"groups":[]}':path==='/v1internal:retrieveUserQuota'?'{"buckets":[]}':path==='/v1internal:fetchAvailableModels'?'{"models":{}}':reply;
+ const upstream=createServer(async(req,res)=>{calls++;let body='';for await(const c of req)body+=c;seen={method:req.method,path:req.url,body};assert.equal(req.headers.authorization,'Bearer fixture-access');res.setHeader('content-type','application/json');res.end(displayReply(req.url??''));});
  const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false}, {app,pool}=createApp(store,config),server=createServer(app);const transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
  store.putAccount({id:'a',email:'fixture@example.invalid',refresh_token:'fake',access_token:'fixture-access',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
  const key=store.createKey({name:'unlimited'}),bounded=store.createKey({name:'bounded',allowance:100000}),p=new Peer(config.origin),q=new Peer(config.origin);const peers=[p,q];let id=0;
@@ -104,7 +105,7 @@ test('full Cloud Code namespace matrix over authenticated WS preserves service f
   const checkCharge=(key:any,before:any,c:typeof matrix[number])=>{const charge=expectedCharge(c),after=store.used(key);assert.deepEqual({...after},{input:before.input+charge.input,output:before.output+charge.output,total:before.total+charge.input+charge.output},c.method+' '+c.path+' exact accounting');};
   for(const c of matrix.filter(c=>c.allowed)){
    const unBefore=store.used(key.key),boundedBefore=store.used(bounded.key);
-   let before=calls,r=await invoke(p,c);assert.equal(r.status,200,c.method+' '+c.path);assert.equal(r.body,c.method==='HEAD'?'':reply);assert.equal(calls,before+1);assert.deepEqual(seen,{method:c.method,path:c.path,body:['GET','HEAD'].includes(c.method)?'':payload(c.path)});
+   let before=calls,r=await invoke(p,c);assert.equal(r.status,200,c.method+' '+c.path);assert.equal(r.body,c.method==='HEAD'?'':displayReply(c.path));assert.equal(calls,before+1);assert.deepEqual(seen,{method:c.method,path:c.path,body:['GET','HEAD'].includes(c.method)?'':payload(c.path)});
    checkCharge(key.key,unBefore,c);
    if(c.path==='/v1internal:loadCodeAssist')continue;
    before=calls;r=await invoke(q,c);assert.equal(r.status,c.bounded?200:422,c.method+' '+c.path);assert.equal(calls,before+(c.bounded?1:0));if(c.bounded)checkCharge(bounded.key,boundedBefore,c);else assert.deepEqual(store.used(bounded.key),boundedBefore);

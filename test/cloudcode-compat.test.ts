@@ -17,7 +17,8 @@ test('REST full Cloud Code compatibility preserves methods, path/query, request 
  const dir=mkdtempSync(join(tmpdir(),'agyp-compat-')),store=new Store(dir);let calls=0,seen:any;
  const raw='{ "metadata":{"ideType":"ANTIGRAVITY"}, "model":"gemini-flash", "request":{"contents":[],"generationConfig":{"maxOutputTokens":10}}, "n":1e+05 }';
  const reply='{ "cloudaicompanionProject":"fixture-project", "operation":{"name":"fixture-op"}, "unknownField":true }';
- const upstream=createServer(async(req,res)=>{calls++;let body='';for await(const c of req)body+=c;seen={method:req.method,path:req.url,body};assert.equal(req.headers.authorization,'Bearer fixture-access');for(const h of ['cookie','x-goog-api-key','x-client-secret','proxy-authorization'])assert.equal(req.headers[h],undefined);res.setHeader('content-type','application/json');res.end(reply);});
+ const displayReply=(path:string)=>path==='/v1internal:retrieveUserQuotaSummary'?'{"groups":[]}':path==='/v1internal:retrieveUserQuota'?'{"buckets":[]}':path==='/v1internal:fetchAvailableModels'?'{"models":{}}':reply;
+ const upstream=createServer(async(req,res)=>{calls++;let body='';for await(const c of req)body+=c;seen={method:req.method,path:req.url,body};assert.equal(req.headers.authorization,'Bearer fixture-access');for(const h of ['cookie','x-goog-api-key','x-client-secret','proxy-authorization'])assert.equal(req.headers[h],undefined);res.setHeader('content-type','application/json');res.end(displayReply(req.url??''));});
  const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app}=createApp(store,config),server=createServer(app);config.origin=await listen(server);
  store.putAccount({id:'a',email:'fixture@example.invalid',refresh_token:'fake',access_token:'fixture-access',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
  const un=store.createKey({name:'unlimited'}),bounded=store.createKey({name:'bounded',allowance:100000});const sessions=[store.session(un.key).token,store.session(bounded.key).token];
@@ -28,7 +29,7 @@ test('REST full Cloud Code compatibility preserves methods, path/query, request 
   const checkCharge=(key:any,before:any,c:typeof matrix[number])=>{const charge=expectedCharge(c),after=store.used(key);assert.deepEqual({...after},{input:before.input+charge.input,output:before.output+charge.output,total:before.total+charge.input+charge.output},c.method+' '+c.path+' exact accounting');};
   for(const c of matrix.filter(c=>c.allowed)){
    const unBefore=store.used(un.key),boundedBefore=store.used(bounded.key);
-   let before=calls;const res=await request(c,sessions[0]);assert.equal(res.status,200,c.method+' '+c.path);assert.equal(await res.text(),c.method==='HEAD'?'':reply);assert.equal(calls,before+1);assert.deepEqual(seen,{method:c.method,path:c.path,body:['GET','HEAD'].includes(c.method)?'':payload(c.path)});
+   let before=calls;const res=await request(c,sessions[0]);assert.equal(res.status,200,c.method+' '+c.path);assert.equal(await res.text(),c.method==='HEAD'?'':displayReply(c.path));assert.equal(calls,before+1);assert.deepEqual(seen,{method:c.method,path:c.path,body:['GET','HEAD'].includes(c.method)?'':payload(c.path)});
    checkCharge(un.key,unBefore,c);
    // loadCodeAssist retains the old safe bounded-key bootstrap, tested separately.
    if(c.path==='/v1internal:loadCodeAssist')continue;

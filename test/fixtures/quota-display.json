@@ -1,0 +1,140 @@
+{
+  "provenance": "Synthetic provider-wire fixtures derived from static descriptor evidence, not captured traffic or real parser execution.",
+  "retrieveUserQuotaSummary": {
+    "email": "pool@example.invalid",
+    "groups": [
+      {
+        "displayName": "Gemini Models",
+        "buckets": [
+          {
+            "bucketId": "gemini-weekly",
+            "displayName": "weekly",
+            "window": "weekly",
+            "remainingAmount": "123456",
+            "resetTime": "2099-01-01T00:00:00Z"
+          },
+          {
+            "bucketId": "gemini-5h",
+            "displayName": "5h",
+            "window": "5h",
+            "remainingAmount": "123456",
+            "resetTime": "2099-01-01T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "displayName": "Claude and GPT",
+        "buckets": [
+          {
+            "bucketId": "claude-weekly",
+            "displayName": "weekly",
+            "window": "weekly",
+            "remainingAmount": "123456",
+            "resetTime": "2099-01-01T00:00:00Z"
+          },
+          {
+            "bucketId": "claude-5h",
+            "displayName": "5h",
+            "window": "5h",
+            "remainingAmount": "123456",
+            "resetTime": "2099-01-01T00:00:00Z"
+          }
+        ]
+      },
+      {
+        "displayName": "Gemini 4 Argon",
+        "buckets": [
+          {
+            "bucketId": "gemini-argon-weekly",
+            "displayName": "weekly",
+            "window": "weekly",
+            "remainingAmount": "123456",
+            "resetTime": "2099-01-01T00:00:00Z"
+          }
+        ]
+      }
+    ]
+  },
+  "retrieveUserQuota": {
+    "email": "pool@example.invalid",
+    "buckets": [
+      {
+        "modelId": "gemini-flash",
+        "tokenType": 1,
+        "remainingAmount": "123456",
+        "resetTime": "2099-01-01T00:00:00Z"
+      },
+      {
+        "modelId": "claude-sonnet",
+        "tokenType": 1,
+        "remainingAmount": "123456",
+        "resetTime": "2099-01-01T00:00:00Z"
+      },
+      {
+        "modelId": "gpt-5",
+        "tokenType": 1,
+        "remainingAmount": "123456",
+        "resetTime": "2099-01-01T00:00:00Z"
+      },
+      {
+        "modelId": "gemini-4-argon-high",
+        "tokenType": 1,
+        "remainingAmount": "123456",
+        "resetTime": "2099-01-01T00:00:00Z"
+      }
+    ]
+  },
+  "fetchAvailableModels": {
+    "email": "pool@example.invalid",
+    "models": {
+      "gemini-flash": {
+        "displayName": "gemini-flash",
+        "supportsThinking": true,
+        "quotaInfo": {
+          "remainingFraction": 0.123,
+          "resetTime": "2099-01-01T00:00:00Z"
+        }
+      },
+      "claude-sonnet": {
+        "displayName": "claude-sonnet",
+        "supportsThinking": true,
+        "quotaInfo": {
+          "remainingFraction": 0.123,
+          "resetTime": "2099-01-01T00:00:00Z"
+        }
+      },
+      "gpt-5": {
+        "displayName": "gpt-5",
+        "supportsThinking": true,
+        "quotaInfo": {
+          "remainingFraction": 0.123,
+          "resetTime": "2099-01-01T00:00:00Z"
+        }
+      },
+      "gemini-4-argon-high": {
+        "displayName": "gemini-4-argon-high",
+        "supportsThinking": true,
+        "quotaInfo": {
+          "remainingFraction": 0.123,
+          "resetTime": "2099-01-01T00:00:00Z"
+        }
+      }
+    },
+    "defaultAgentModelId": "gemini-flash",
+    "agentModelSorts": [
+      {
+        "displayName": "Models",
+        "groups": [
+          {
+            "modelIds": [
+              "gemini-flash",
+              "claude-sonnet",
+              "gpt-5",
+              "gemini-4-argon-high"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
