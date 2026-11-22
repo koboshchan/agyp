@@ -59,7 +59,7 @@ test('single-port HTTP handshake RBAC CSRF replay exact proxy rotation streaming
  assert.equal(calls.length,before);
  const unbounded=store.createKey({name:'default-bound'}),un=await login(unbounded.token);
  const defaulted=await call('/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+un.data.token,'content-type':'application/json'},body:JSON.stringify({model:'gemini-4-argon-trial',request:{contents:[]}})});assert.equal(defaulted.status,200);await defaulted.text();
- assert.equal(JSON.parse(calls.at(-1).body).request.generationConfig.maxOutputTokens,65536);
+ assert.equal(JSON.parse(calls.at(-1).body).request.generationConfig,undefined);
  store.revoke(user.key.id);assert.equal((await call('/api/me',{headers:nh})).status,401);
  }finally{await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
