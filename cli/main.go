@@ -154,12 +154,26 @@ func clean(h http.Header) {
 	}
 }
 
-var inferencePath = regexp.MustCompile(`^/v1internal:(generateContent|streamGenerateContent|countTokens|fetchAvailableModels)$`)
+var cloudCodePath = regexp.MustCompile(`^/v1internal[:/][A-Za-z][A-Za-z0-9_:/.-]*$`)
+var deniedService = regexp.MustCompile(`(?i)admin|credential|oauth|accessToken|refreshToken|apiKey|secret|iam|permission|serviceAccount|(?:create|delete|update|list|get)Accounts?`)
 var modelActionPath = regexp.MustCompile(`^/v1(beta)?/models/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens)$`)
+var modelReadPath = regexp.MustCompile(`^/v1(beta)?/models(/[A-Za-z0-9._-]+)?$`)
 
 func inferenceAllowed(method, path string) bool {
-	return method == "POST" && (inferencePath.MatchString(path) || modelActionPath.MatchString(path)) ||
-		method == "GET" && (path == "/v1/models" || path == "/v1beta/models")
+	switch method {
+	case "GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS":
+	default:
+		return false
+	}
+	if strings.ContainsAny(path, "%?#\\\r\n\x00") || strings.Contains(path, "//") || deniedService.MatchString(path) {
+		return false
+	}
+	for _, part := range strings.Split(path, "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return cloudCodePath.MatchString(path) || method == "POST" && modelActionPath.MatchString(path) || method == "GET" && modelReadPath.MatchString(path)
 }
 func (s *shim) proxyAuthorized(r *http.Request) bool {
 	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("agyp:"+s.capability))

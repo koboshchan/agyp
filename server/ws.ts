@@ -7,14 +7,14 @@ import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import {Store,type Key} from './store.js';
 import {Pool} from './pool.js';
-import {proxy,allowedProxy} from './proxy.js';
+import {proxy,allowedProxy,boundedKey} from './proxy.js';
 import {createBootstrap,allowedBootstrap} from './bootstrap.js';
 
 const MAX_BODY=16*1024*1024,MAX_BUFFER=1024*1024;
 const id=z.string().regex(/^[a-f0-9]{32}$/);
 const headers=z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/),z.string().max(8192).refine(v=>!/[\r\n\x00]/.test(v))).refine(h=>Object.keys(h).length<=64&&JSON.stringify(h).length<=32768);
 const frames=z.discriminatedUnion('type',[
- z.object({type:z.literal('start'),id,method:z.enum(['POST','GET']),path:z.string().max(8192),headers:headers.default({}),deadline:z.number().int().positive()}).strict(),
+ z.object({type:z.literal('start'),id,method:z.enum(['POST','GET','HEAD','PUT','PATCH','DELETE','OPTIONS']),path:z.string().max(8192),headers:headers.default({}),deadline:z.number().int().positive()}).strict(),
  z.object({type:z.literal('data'),id,data:z.string().min(4).max(45000).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict(),
  z.object({type:z.literal('end'),id}).strict(),z.object({type:z.literal('cancel'),id}).strict()
 ]);
@@ -110,7 +110,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
     // Mark dispatched before invoking the pipeline. There is no resume/replay protocol.
     const req={method:p.method,originalUrl:p.path,path:new URL(p.path,'http://local').pathname,headers:Object.fromEntries(Object.entries(p.headers).map(([k,v])=>[k.toLowerCase(),v])),body:Buffer.concat(p.parts)} as Request;
     p.parts=[];
-    const job=(allowedBootstrap(req.method,req.originalUrl)?bootstrap(req,res as unknown as Response,key as Key):proxy(req,res as unknown as Response,key as Key,store,pool)).catch((err:any)=>{
+    const job=(boundedKey(key as Key)&&allowedBootstrap(req.method,req.originalUrl)?bootstrap(req,res as unknown as Response,key as Key):proxy(req,res as unknown as Response,key as Key,store,pool)).catch((err:any)=>{
      if(!res.headersSent&&!res.destroyed)res.status([400,401,403,422,429].includes(err?.status)?err.status:502).json({error:{message:'Request rejected'}});
      else if(!res.writableEnded)res.destroy();
     }).finally(()=>{remove(f.id);jobs.delete(job);});

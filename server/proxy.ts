@@ -4,15 +4,30 @@ import {Pool,family} from './pool.js';
 import {rewriteModel,rewriteURLModel,repairSignatures,signatureError} from './replay.js';
 import {Store,type Key,type Usage} from './store.js';
 import {once} from 'node:events';
+import {abortable} from './bootstrap.js';
 
-const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie']);
+const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie','x-goog-api-key','x-client-secret']);
+// The switcher handler forwards the request method/path without an RPC allowlist
+// (internal/proxy/handler.go ServeHTTP, request construction). Expose the Cloud
+// Code service namespace, not its arbitrary-host forward proxy or admin services.
+const methods=new Set(['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS']);
+const deniedService=/admin|credential|oauth|accessToken|refreshToken|apiKey|secret|iam|permission|serviceAccount|(?:create|delete|update|list|get)Accounts?/i;
 export function allowedProxy(method:string,path:string){
- if(!path.startsWith('/')||path.startsWith('//')||path.includes('\\')||/[\r\n\x00]/.test(path))return false;
- const p=new URL(path,'http://local').pathname;
- return (method==='POST'&&/^\/v1internal:(generateContent|streamGenerateContent|countTokens|fetchAvailableModels)$/.test(p))
- ||(method==='POST'&&/^\/v1(?:beta)?\/models\/[^/:]+:(generateContent|streamGenerateContent|countTokens)$/.test(p))
- ||(method==='GET'&&/^\/v1(?:beta)?\/models(?:\/[^/:]+)?$/.test(p));
+ if(!methods.has(method)||path.length>8192||!path.startsWith('/')||path.startsWith('//')||/[\\\r\n\x00#]/.test(path))return false;
+ const p=path.split('?')[0];
+ // No URL normalization, encoded separators, dot segments or ambiguous path forms.
+ if(p.includes('%')||p.includes('//')||p.split('/').some(v=>v==='.'||v==='..')||deniedService.test(p))return false;
+ if(/^\/v1internal(?=[:/])[:/][A-Za-z][A-Za-z0-9_:/.-]*$/.test(p))return true;
+ return (method==='POST'&&/^\/v1(?:beta)?\/models\/[A-Za-z0-9._-]+:(generateContent|streamGenerateContent|countTokens)$/.test(p))
+ ||(method==='GET'&&/^\/v1(?:beta)?\/models(?:\/[A-Za-z0-9._-]+)?$/.test(p));
 }
+const boundedControls=new Set(['loadCodeAssist','fetchAvailableModels','retrieveUserQuota','retrieveUserQuotaSummary','listExperiments','fetchUserInfo','recordCodeAssistMetrics','countTokens']);
+export function boundedControl(method:string,path:string){
+ const p=path.split('?')[0];
+ return method==='POST'&&(boundedControls.has(p.replace(/^\/v1internal:/,''))||/^\/v1(?:beta)?\/models\/[A-Za-z0-9._-]+:countTokens$/.test(p))
+ ||method==='GET'&&(p==='/v1internal/cascadeNuxes'||/^\/v1(?:beta)?\/models(?:\/[A-Za-z0-9._-]+)?$/.test(p));
+}
+export function boundedKey(key:Key){return key.allowance!==null||key.inputCap!==null||key.outputCap!==null;}
 export function hasMedia(value:any):boolean{
  if(!value||typeof value!=='object')return false;
  return Object.entries(value).some(([key,v])=>['inlineData','fileData','inline_data','file_data','cachedContent','cached_content'].includes(key)||hasMedia(v));
@@ -40,14 +55,16 @@ export class UsageReader {
 }
 export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Pool){
  if(!allowedProxy(req.method,req.originalUrl))throw Object.assign(new Error('Upstream action not allowed'),{status:403});
- let raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};if(raw.length){try{body=JSON.parse(raw.toString());}catch{throw Object.assign(new Error('Expected JSON body'),{status:400});}}
- if(!body||typeof body!=='object'||Array.isArray(body))throw Object.assign(new Error('Expected JSON object'),{status:400});
+ const generation=req.method==='POST'&&/:(?:streamGenerateContent|generateContent)$/.test(req.path);
+ const raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};
+ if(raw.length){try{body=JSON.parse(raw.toString());}catch{if(generation)throw Object.assign(new Error('Expected JSON body'),{status:400});}}
+ if(!body||typeof body!=='object'||Array.isArray(body)){if(generation)throw Object.assign(new Error('Expected JSON object'),{status:400});body={};}
  const model=extractModel(req.originalUrl,body);
- const generation=/:streamGenerateContent|:generateContent/.test(req.path);
  if(generation&&!model)throw Object.assign(new Error('Model is required'),{status:400});
  // Reserve a conservative upper bound before starting. byte length bounds text tokens;
  // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
- const bounded=key.allowance!==null||key.inputCap!==null||key.outputCap!==null;
+ const bounded=boundedKey(key);
+ if(bounded&&!generation&&!boundedControl(req.method,req.originalUrl))throw Object.assign(new Error('Unknown Cloud Code action requires an unlimited key'),{status:422});
  if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
  const internal=req.path.startsWith('/v1internal:');
  if(generation&&internal&&(!body.request||typeof body.request!=='object'||Array.isArray(body.request)))throw Object.assign(new Error('Internal generation requires request envelope'),{status:400});
@@ -68,7 +85,7 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  const reservation=store.reserve(key,model||'(control)',input,output);
  let final:Usage|undefined,status=502,started=false;
  const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),600_000);
- res.on('close',()=>{if(!res.writableEnded)abort.abort();});
+ const disconnect=()=>{if(!res.writableEnded)abort.abort();};res.on('close',disconnect);
  try{
   const tried=new Set<string>();let lastStatus=503,attempts=0;
   const maxAttempts=Math.min(50,store.accounts().length*2+1);
@@ -77,7 +94,9 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
    const {account,model:routedModel}=route;tried.add(account.id);
    let requestRaw=routedModel===model?raw:rewriteModel(raw,routedModel);
    const requestPath=routedModel===model?req.originalUrl:rewriteURLModel(req.originalUrl,routedModel);
-   let token:string;try{token=await pool.access(account.id);}catch{continue;}
+   let token:string;try{token=await abortable(pool.access(account.id),abort.signal);}catch{continue;}
+   if(abort.signal.aborted)throw new Error('Request canceled');
+   if(!store.valid(store.key(key.id)))throw Object.assign(new Error('Key expired or revoked'),{status:401});
    const headers=new Headers();const connection=(req.headers.connection??'').split(',').map(h=>h.trim().toLowerCase());
    for(const [name,val] of Object.entries(req.headers))if(!strip.has(name)&&!connection.includes(name)&&!name.startsWith('x-forwarded-')&&val!==undefined)headers.set(name,Array.isArray(val)?val.join(', '):val);
    headers.set('authorization','Bearer '+token);headers.set('accept-encoding','identity');
@@ -93,7 +112,7 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
    let upstream=await send();
    if(upstream.status===401){
     await readBounded(upstream,1_048_576);
-    try{token=await pool.access(account.id,true);headers.set('authorization','Bearer '+token);upstream=await send();}
+    try{token=await abortable(pool.access(account.id,true),abort.signal);headers.set('authorization','Bearer '+token);upstream=await send();}
     catch{lastStatus=401;continue;}
    }
    if([400,404].includes(upstream.status)){
@@ -137,7 +156,7 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
   res.status(status).json({error:{code:status,message:tried.size?'No eligible account remains for the exact requested model':'No eligible account for the exact requested model'}});
   final={input:0,output:0,cached:0,total:0};
  }catch(e){if(!started&&!abort.signal.aborted){res.status(502).json({error:{message:'Upstream connection failed'}});}else if(!res.writableEnded)res.destroy();}
- finally{clearTimeout(timer);
+ finally{clearTimeout(timer);res.off('close',disconnect);
   // Missing usage after a generation may have spent tokens. Charge its reservation, not zero.
   store.finish(reservation,final??{input,output,cached:0,total:input+output},status);
  }

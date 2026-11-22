@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
 import {createServer,type Server} from 'node:http';
 import {once} from 'node:events';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import WebSocket from 'ws';
@@ -84,4 +84,36 @@ test('transport shutdown settles dispatched usage before the database can close'
  const key=store.createKey({name:'drain',allowance:10000}),p=new Peer(config.origin);
  try{await p.auth(key.token);start(p,1,JSON.stringify({model:'gemini-flash',request:{generationConfig:{maxOutputTokens:10}}}));await began;assert.equal((await p.next()).type,'headers');assert.equal((await p.next()).type,'data');assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,1);await transport.close();assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);assert.equal(store.used(key.key).total,3);}
  finally{await p.stop();await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('full Cloud Code namespace matrix over authenticated WS preserves service fidelity and bounded admission',async()=>{
+ const matrix=JSON.parse(readFileSync(new URL('./fixtures/cloudcode-paths.json',import.meta.url),'utf8')) as {method:string;path:string;allowed:boolean;bounded:boolean}[];
+ const dir=mkdtempSync(join(tmpdir(),'agyp-ws-compat-')),store=new Store(dir);let calls=0,seen:any;
+ const reply='{ "cloudaicompanionProject":"fixture-project", "operation":{"name":"fixture-op"}, "unknownField":true }';
+ const upstream=createServer(async(req,res)=>{calls++;let body='';for await(const c of req)body+=c;seen={method:req.method,path:req.url,body};assert.equal(req.headers.authorization,'Bearer fixture-access');res.setHeader('content-type','application/json');res.end(reply);});
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false}, {app,pool}=createApp(store,config),server=createServer(app);const transport=attachWebSocket(server,store,pool);config.origin=await listen(server);
+ store.putAccount({id:'a',email:'fixture@example.invalid',refresh_token:'fake',access_token:'fixture-access',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
+ const key=store.createKey({name:'unlimited'}),bounded=store.createKey({name:'bounded',allowance:100000}),p=new Peer(config.origin),q=new Peer(config.origin);const peers=[p,q];let id=0;
+ const payload=(path:string)=>path.startsWith('/v1internal')?'{ "metadata":{"ideType":"ANTIGRAVITY"}, "model":"gemini-flash", "request":{"contents":[],"generationConfig":{"maxOutputTokens":10}}, "n":1e+05 }':'{ "contents":[],"generationConfig":{"maxOutputTokens":10},"n":1e+05 }';
+ const invoke=async(peer:Peer,c:typeof matrix[number])=>{const n=rid(++id),body=['GET','HEAD'].includes(c.method)?'':payload(c.path);peer.send({type:'start',id:n,method:c.method,path:c.path,headers:{'content-type':'application/json'},deadline:Date.now()+10000});if(body)peer.send({type:'data',id:n,data:Buffer.from(body).toString('base64')});peer.send({type:'end',id:n});return result(peer);};
+ try{
+  await p.auth(key.token);await q.auth(bounded.token);
+  const expectedCharge=(c:typeof matrix[number])=>c.method==='POST'&&/:(?:generateContent|streamGenerateContent)$/.test(c.path)?{input:Buffer.byteLength(payload(c.path))+1024,output:10}:{input:0,output:0};
+  const checkCharge=(key:any,before:any,c:typeof matrix[number])=>{const charge=expectedCharge(c),after=store.used(key);assert.deepEqual({...after},{input:before.input+charge.input,output:before.output+charge.output,total:before.total+charge.input+charge.output},c.method+' '+c.path+' exact accounting');};
+  for(const c of matrix.filter(c=>c.allowed)){
+   const unBefore=store.used(key.key),boundedBefore=store.used(bounded.key);
+   let before=calls,r=await invoke(p,c);assert.equal(r.status,200,c.method+' '+c.path);assert.equal(r.body,c.method==='HEAD'?'':reply);assert.equal(calls,before+1);assert.deepEqual(seen,{method:c.method,path:c.path,body:['GET','HEAD'].includes(c.method)?'':payload(c.path)});
+   checkCharge(key.key,unBefore,c);
+   if(c.path==='/v1internal:loadCodeAssist')continue;
+   before=calls;r=await invoke(q,c);assert.equal(r.status,c.bounded?200:422,c.method+' '+c.path);assert.equal(calls,before+(c.bounded?1:0));if(c.bounded)checkCharge(bounded.key,boundedBefore,c);else assert.deepEqual(store.used(bounded.key),boundedBefore);
+  }
+  const exhausted=store.createKey({name:'exhausted',allowance:0}),e=new Peer(config.origin);peers.push(e);await e.auth(exhausted.token);const beforeExhausted=calls;
+  for(const [path,status] of [['/v1internal:newFutureAction',422],['/v1internal:generateContent',429],['/v1internal:fetchAvailableModels',200]] as const){const r=await invoke(e,{method:'POST',path,allowed:true,bounded:true});assert.equal(r.status,status,path);}
+  assert.equal(calls,beforeExhausted+1);assert.deepEqual({...store.used(exhausted.key)},{input:0,output:0,total:0});
+  const before=calls;
+  for(const c of matrix.filter(c=>!c.allowed)){
+   const bad=new Peer(config.origin);peers.push(bad);await bad.auth(key.token);const closed=once(bad.ws,'close');bad.send({type:'start',id:rid(1),method:c.method,path:c.path,headers:{},deadline:Date.now()+10000});await closed;assert.equal(calls,before,c.path);
+  }
+  assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });

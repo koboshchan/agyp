@@ -1,0 +1,278 @@
+[
+  {
+    "method": "POST",
+    "path": "/v1internal:loadCodeAssist",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:onboardUser",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:fetchAvailableModels",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:retrieveUserQuota",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:retrieveUserQuotaSummary",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:listExperiments",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:recordCodeAssistMetrics",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:fetchUserInfo",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:fetchUserSettings",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:updateUserSettings",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:countTokens",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:newFutureAction",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "GET",
+    "path": "/v1internal/cascadeNuxes?client=fixture&alt=json",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "GET",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "HEAD",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "PUT",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "PATCH",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "OPTIONS",
+    "path": "/v1internal/resources/fixture:action?alt=json",
+    "allowed": true,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:generateContent",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:streamGenerateContent",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1/models/gemini-flash:generateContent",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/v1beta/models/gemini-flash:countTokens",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "GET",
+    "path": "/v1/models/gemini-flash",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "GET",
+    "path": "/v1beta/models",
+    "allowed": true,
+    "bounded": true
+  },
+  {
+    "method": "POST",
+    "path": "/api/keys",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:fetchAdminControls",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:deleteAccount",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:updateCredentials",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:refreshToken",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal/serviceAccounts/x",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:setIamPolicy",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "CONNECT",
+    "path": "/v1internal:loadCodeAssist",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "TRACE",
+    "path": "/v1internal:loadCodeAssist",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "//evil.invalid/v1internal:loadCodeAssist",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "https://evil.invalid/v1internal:loadCodeAssist",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal/../api/keys",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal/%2e%2e/api/keys",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:fetchAvailableModels/../onboardUser",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal//evil.invalid",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:loadCodeAssist#evil",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:loadCodeAssist\\evil",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/v1internal:loadCodeAssist%3Fadmin=x",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/models/x",
+    "allowed": false,
+    "bounded": false
+  },
+  {
+    "method": "POST",
+    "path": "/oauth/token",
+    "allowed": false,
+    "bounded": false
+  }
+]

@@ -330,15 +330,15 @@ func TestLocalCredentialBoundary(t *testing.T) {
 	}{
 		{"POST", "/api/keys", 403},
 		{"POST", "/testcap/api/keys", 403},
-		{"POST", "/testcap/v1internal:loadCodeAssist?project=x", 403},
-		{"GET", "/testcap/v1internal:loadCodeAssist", 403},
-		{"POST", "/testcap/v1internal:onboardUser", 403},
+		{"POST", "/testcap/v1internal:loadCodeAssist?project=x", 204},
+		{"GET", "/testcap/v1internal:loadCodeAssist", 204},
+		{"POST", "/testcap/v1internal:onboardUser", 204},
 		{"POST", "/wrong/v1internal:generateContent", 403},
 		{"POST", "/testcap/v1internal:generateContent/../api/keys", 403},
 		{"POST", "/testcap/%76%31internal:generateContent", 403},
-		{"GET", "/testcap/v1internal:generateContent", 403},
+		{"GET", "/testcap/v1internal:generateContent", 204},
 		{"DELETE", "/testcap/v1/models", 403},
-		{"POST", "/testcap/v1internal:generateContent/extra", 403},
+		{"POST", "/testcap/v1internal:generateContent/extra", 204},
 		{"POST", "/testcap/v1internal:generateContent", 204},
 		{"POST", "/testcap/v1internal:streamGenerateContent", 204},
 		{"POST", "/testcap/v1internal:countTokens", 204},
@@ -350,18 +350,19 @@ func TestLocalCredentialBoundary(t *testing.T) {
 		{"POST", "/testcap/v1internal:loadCodeAssist", 204},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
+			before := remote.Load()
 			r := httptest.NewRequest(tc.method, tc.path, nil)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
 			if w.Code != tc.want {
 				t.Fatalf("got %d want %d", w.Code, tc.want)
 			}
-			if tc.want == 403 && remote.Load() != 0 {
+			if tc.want == 403 && remote.Load() != before {
 				t.Fatal("forbidden request reached upstream")
 			}
 		})
 	}
-	if remote.Load() != 9 || n.Load() != 1 {
+	if remote.Load() != 14 || n.Load() != 1 {
 		t.Fatal(remote.Load(), n.Load())
 	}
 }
@@ -386,7 +387,7 @@ func TestProxyRequiresCapability(t *testing.T) {
 func TestProxyCloudCodeAllowlist(t *testing.T) {
 	_, a, n := authServer(t, func(http.ResponseWriter, *http.Request) { t.Error("unexpected remote") })
 	h := &shim{a, client(), "testcap"}
-	for _, path := range []string{"/api/keys", "/v1internal:loadCodeAssist?project=x", "/v1internal:onboardUser"} {
+	for _, path := range []string{"/api/keys", "/v1internal:fetchAdminControls", "/v1internal:deleteAccount"} {
 		r := httptest.NewRequest("POST", "http://cloudcode-pa.googleapis.com"+path, nil)
 		r.Header.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("agyp:testcap")))
 		w := httptest.NewRecorder()
@@ -435,5 +436,26 @@ func TestVersionWithoutCredentials(t *testing.T) {
 	r.Close()
 	if err != nil || code != 0 || string(output) != "agyp "+version+"\n" {
 		t.Fatalf("version result code=%d output=%q err=%v", code, output, err)
+	}
+}
+
+func TestCloudCodeCompatibilityMatrix(t *testing.T) {
+	data, err := os.ReadFile("../test/fixtures/cloudcode-paths.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Method  string
+		Path    string
+		Allowed bool
+	}
+	if err = json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		path, _, _ := strings.Cut(tc.Path, "?")
+		if got := inferenceAllowed(tc.Method, path); got != tc.Allowed {
+			t.Errorf("%s %s allowed=%v want=%v", tc.Method, tc.Path, got, tc.Allowed)
+		}
 	}
 }

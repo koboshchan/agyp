@@ -11,8 +11,8 @@ test('escaped and deeply nested media keys are recognized after JSON parse',()=>
  assert(hasMedia(body));assert(hasMedia({a:[{inline_data:{}}]}));assert(!hasMedia({text:'fileData is a word'}));
 });
 test('upstream account/control paths forbidden, inference explicit method allowlist',()=>{
- for(const p of ['//attacker.invalid/v1/models/gemini-flash:generateContent','/\\attacker.invalid/v1/models/gemini-flash:generateContent','https://attacker.invalid/v1/models/x:generateContent','/v1internal:retrieveUserQuotaSummary','/v1internal:onboardUser','/v1internal:loadCodeAssist','/v1internal:deleteAccount','/api/keys','/v1internal:fetchAvailableModels/../onboardUser','/v1/models/x:generateContent/evil'])assert(!allowedProxy('POST',p),p);
- assert(allowedProxy('POST','/v1internal:streamGenerateContent?alt=sse'));assert(allowedProxy('POST','/v1/models/exact:countTokens'));assert(!allowedProxy('DELETE','/v1/models/x'));assert(!allowedProxy('GET','/v1internal:generateContent'));
+ for(const p of ['//attacker.invalid/v1/models/gemini-flash:generateContent','/\\attacker.invalid/v1/models/gemini-flash:generateContent','https://attacker.invalid/v1/models/x:generateContent','/v1internal:fetchAdminControls','/v1internal:updateCredentials','/v1internal:deleteAccount','/api/keys','/v1internal:fetchAvailableModels/../onboardUser','/v1/models/x:generateContent/evil'])assert(!allowedProxy('POST',p),p);
+ assert(allowedProxy('POST','/v1internal:streamGenerateContent?alt=sse'));assert(allowedProxy('POST','/v1/models/exact:countTokens'));assert(!allowedProxy('DELETE','/v1/models/x'));assert(allowedProxy('GET','/v1internal:generateContent'));
 });
 test('quota routing follows Go family windows, including model-labeled and shared weekly buckets',()=>{
  const dir=mkdtempSync(join(tmpdir(),'agyp-')),s=new Store(dir),p=new Pool(s,'http://localhost','','');

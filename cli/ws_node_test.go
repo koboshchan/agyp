@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -39,14 +41,57 @@ func TestWSNodeIntegration(t *testing.T) {
 	}
 	bootBody, e := io.ReadAll(bootResp.Body)
 	bootResp.Body.Close()
-	if e != nil || bootResp.StatusCode != 200 || strings.Contains(string(bootBody), "private") || !strings.Contains(string(bootBody), "premium-tier") {
+	if e != nil || bootResp.StatusCode != 200 || !strings.Contains(string(bootBody), "cloudaicompanionProject") || !strings.Contains(string(bootBody), "premium-tier") {
 		t.Fatal(string(bootBody), e)
 	}
-	for _, target := range []string{"/api/keys", "/v1internal:onboardUser", "/v1internal:loadCodeAssist?x=1", "/v1internal:listExperiments", "/v1internal/cascadeNuxes"} {
+	for _, target := range []string{"/api/keys", "/v1internal:fetchAdminControls", "/v1internal:deleteAccount", "/v1internal:refreshToken", "/v1internal/../api/keys"} {
 		r, _ := http.NewRequestWithContext(ctx, "POST", base+target, nil)
 		if resp, err := tr.RoundTrip(r); err == nil {
 			resp.Body.Close()
 			t.Error("unsafe websocket endpoint allowed", target)
+		}
+	}
+
+	// Shared matrix goes through the real authenticated localhost shim and WS client.
+	data, err := os.ReadFile("../test/fixtures/cloudcode-paths.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Method  string
+		Path    string
+		Allowed bool
+	}
+	if err = json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	a, err := newAuth(u, os.Getenv("AGYP_WS_TEST_KEY"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &shim{auth: a, http: &http.Client{Transport: tr}, capability: "fixture-cap"}
+	for _, c := range cases {
+		// Non-HTTP URI strings and encoded/traversal variants are exercised by both
+		// predicate matrices; actual shim requests below use canonical service paths.
+		if !c.Allowed {
+			continue
+		}
+		payload := `{ "metadata":{"ideType":"ANTIGRAVITY"}, "model":"gemini-flash", "request":{"generationConfig":{"maxOutputTokens":10}}, "n":1e+05 }`
+		if !strings.HasPrefix(c.Path, "/v1internal") {
+			payload = `{ "generationConfig":{"maxOutputTokens":10}, "n":1e+05 }`
+		}
+		if c.Method == "GET" || c.Method == "HEAD" {
+			payload = ""
+		}
+		req := httptest.NewRequest(c.Method, "/fixture-cap"+c.Path, strings.NewReader(payload)).WithContext(ctx)
+		req.Header.Set("X-Compat-Fixture", "1")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("shim %s %s status %d body %s", c.Method, c.Path, w.Code, w.Body.String())
+		}
+		if c.Method != "HEAD" && !strings.Contains(w.Body.String(), "fixture-compatible") {
+			t.Fatal(w.Body.String())
 		}
 	}
 	var wg sync.WaitGroup

@@ -50,7 +50,7 @@ export function createBootstrap(store:Store,pool:Pool){
 }
 // OAuth refresh is shared pool work and cannot be aborted by one CLI request.
 // Bound this caller's wait without leaving a listener or an unhandled rejection.
-async function abortable<T>(work:Promise<T>,signal:AbortSignal):Promise<T>{
+export async function abortable<T>(work:Promise<T>,signal:AbortSignal):Promise<T>{
  let listener:()=>void=()=>{};
  const canceled=new Promise<never>((_resolve,reject)=>{listener=()=>reject(new Error('Eligibility request canceled'));if(signal.aborted)listener();else signal.addEventListener('abort',listener,{once:true});});
  try{return await Promise.race([work,canceled]);}finally{signal.removeEventListener('abort',listener);}
