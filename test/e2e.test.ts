@@ -39,9 +39,9 @@ test('single-port HTTP handshake RBAC CSRF replay exact proxy rotation streaming
  assert.equal((await call('/api/keys',{method:'POST',headers:{cookie,'content-type':'application/json',origin},body:'{"name":"CSRF"}'})).status,403);
  assert.equal((await call('/api/keys',{method:'POST',headers:{cookie,'content-type':'application/json',origin,'x-csrf-token':web.data.csrf},body:'{"name":"CSRF"}'})).status,201);
  assert.equal((await call('/auth/challenge',{method:'POST',headers:{origin:'https://evil.test','content-type':'application/json'},body:JSON.stringify({keyId:user.key.id})})).status,403);
- for(const id of ['a','b'])store.putAccount({id,email:id+'@example.com',refresh_token:'GOOGLE-REFRESH',access_token:'google-'+id,token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[{family:'argon',label:'Argon',remaining:1,reset:0}],cooldowns:{},denied:{},updated:Date.now()});
+ for(const id of ['a','b'])store.putAccount({id,email:id+'@example.com',refresh_token:'GOOGLE-REFRESH',access_token:'google-'+id,token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[{family:'argon',label:'Argon',remaining:1,reset:0},{family:'gemini',label:'Gemini',remaining:1,reset:0}],cooldowns:{},denied:{},updated:Date.now()});
  mode='rotate';
- const reqBody=JSON.stringify({model:'gemini-4-argon-trial',request:{contents:[{parts:[{text:'test'}]}],generationConfig:{maxOutputTokens:20}}});
+ const reqBody=JSON.stringify({model:'gemini-flash',request:{contents:[{parts:[{text:'test'}]}],generationConfig:{maxOutputTokens:20}}});
  const proxied=await call('/v1internal:streamGenerateContent?alt=sse',{method:'POST',headers:{...nh,'x-test-client':'kept'},body:reqBody});
  assert.equal(proxied.status,200);assert.equal(proxied.headers.get('x-test-fidelity'),'yes');assert((await proxied.text()).includes('[DONE]'));
  assert.equal(calls.length,2);for(const c of calls){assert.equal(c.body,reqBody);assert.equal(c.url,'/v1internal:streamGenerateContent?alt=sse');assert.equal(c.headers['x-test-client'],'kept');assert(!c.auth.includes('agyp_'));}
@@ -52,9 +52,9 @@ test('single-port HTTP handshake RBAC CSRF replay exact proxy rotation streaming
  // Mixed envelopes cannot reduce the reservation below the forwarded generation limit.
  const before=calls.length;
  for(const b of [
- {model:'gemini-4-argon-trial',generationConfig:{maxOutputTokens:1},request:{generationConfig:{candidateCount:1}}},
- {model:'gemini-4-argon-trial',request:{generation_config:{max_output_tokens:1}}},
- {model:'gemini-4-argon-trial',request:{generationConfig:{max_output_tokens:1}}},
+ {model:'gemini-flash',generationConfig:{maxOutputTokens:1},request:{generationConfig:{candidateCount:1}}},
+ {model:'gemini-flash',request:{generation_config:{max_output_tokens:1}}},
+ {model:'gemini-flash',request:{generationConfig:{max_output_tokens:1}}},
  ])assert.equal((await call('/v1internal:generateContent',{method:'POST',headers:nh,body:JSON.stringify(b)})).status,400);
  assert.equal(calls.length,before);
  const unbounded=store.createKey({name:'default-bound'}),un=await login(unbounded.token);

@@ -9,6 +9,7 @@ import {Store,type Key} from './store.js';
 import {Pool} from './pool.js';
 import {proxy,allowedProxy,boundedKey} from './proxy.js';
 import {createBootstrap,allowedBootstrap} from './bootstrap.js';
+import {LimitedModelError} from './model-policy.js';
 import {AdmissionError,LocalAdmissionDiagnostics} from './diagnostics.js';
 
 const MAX_BODY=16*1024*1024,MAX_BUFFER=1024*1024;
@@ -115,7 +116,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
       const status=err instanceof z.ZodError?400:[400,401,403,413,422,429].includes(err?.status)?err.status:502;
       const reason=err instanceof AdmissionError?err.reason:allowedBootstrap(req.method,req.originalUrl)&&(err instanceof z.ZodError||err?.status===400)?'invalid_bootstrap':undefined;
       const correlationId=status===400&&reason?diagnostics?.record(req.method,req.originalUrl,req.body,reason):undefined;
-      res.status(status).json({error:{message:correlationId?'Request rejected [agyp diagnostic '+correlationId+']':'Request rejected',...(correlationId?{correlationId}:{})}});
+      res.status(status).json({error:{message:err instanceof LimitedModelError?'unsupported for limited key':correlationId?'Request rejected [agyp diagnostic '+correlationId+']':'Request rejected',...(correlationId?{correlationId}:{})}});
      }
      else if(!res.writableEnded)res.destroy();
     }).finally(()=>{remove(f.id);jobs.delete(job);});

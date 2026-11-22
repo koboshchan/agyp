@@ -7,6 +7,7 @@ import {Store,type Key,type Usage} from './store.js';
 import {once} from 'node:events';
 import {abortable} from './bootstrap.js';
 import {admissionError} from './diagnostics.js';
+import {enforceLimitedModel} from './model-policy.js';
 import {quotaDisplayAction,displayQuota,mapQuotaDisplay} from './quota-display.js';
 
 const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie','x-goog-api-key','x-client-secret']);
@@ -62,6 +63,8 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  const raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};
  if(raw.length){try{body=JSON.parse(raw.toString());}catch{if(generation)throw admissionError('invalid_json','Expected JSON body');}}
  if(!body||typeof body!=='object'||Array.isArray(body)){if(generation)throw admissionError('invalid_root','Expected JSON object');body={};}
+ // Deny before any reservation, account selection, OAuth refresh or upstream.
+ if(boundedKey(key))enforceLimitedModel(req.originalUrl,body);
  const model=extractModel(req.originalUrl,body);
  if(generation&&!model)throw admissionError('missing_model','Model is required');
  // Admit using recorded usage only, independent of text/media size or estimated output.
