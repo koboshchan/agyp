@@ -9,3 +9,6 @@
 !ui/**
 ui/node_modules
 ui/dist
+!scripts/
+scripts/**
+!scripts/admission-diagnostics.mjs
