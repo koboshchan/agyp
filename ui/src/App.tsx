@@ -56,10 +56,10 @@ export default function App(){
 
  const notify=useCallback((text:string,error=false)=>{setNote({text,error});clearTimeout(noteTimer.current);noteTimer.current=window.setTimeout(()=>setNote(null),error?9000:5000);},[]);
  const lock=useCallback((message?:string)=>{
-  gen.current++;clearTimeout(sessionTimer.current);setCsrf(undefined);meRef.current=null;
+  const had=!!meRef.current;gen.current++;clearTimeout(noteTimer.current);setNote(null);clearTimeout(sessionTimer.current);setCsrf(undefined);meRef.current=null;
   setMe(null);setStats({});setKeys([]);setAccounts([]);setActive({});setKeyOpen(false);setSecretOpen(false);setOauthOpen(false);setConfirm(null);
   if(tokenRef.current)tokenRef.current.value='';if(secretRef.current)secretRef.current.value='';if(oauthRef.current)oauthRef.current.value='';
-  if(message)notify(message,true);
+  if(message&&had)notify(message,true);
  },[notify]);
  useEffect(()=>setUnauthorizedHandler(()=>lock(lockMsg)),[lock]);
 
@@ -87,7 +87,7 @@ export default function App(){
  const act=async(fn:()=>Promise<void>)=>{if(busy)return;setBusy(true);try{await fn()}catch(e:Any){notify(e.message||'Something went wrong. Please try again.',true)}finally{setBusy(false)}};
  const ask=(title:string,body:string,label:string,run:()=>Promise<void>)=>setConfirm({title,body,label,run});
 
- const onLogin=(e:FormEvent)=>{e.preventDefault();act(async()=>{const v=tokenRef.current?.value??'';if(tokenRef.current)tokenRef.current.value='';await signIn(v);await load();});};
+ const onLogin=(e:FormEvent)=>{e.preventDefault();act(async()=>{const v=tokenRef.current?.value??'';if(tokenRef.current)tokenRef.current.value='';await signIn(v);clearTimeout(noteTimer.current);setNote(null);await load();});};
  const logout=()=>act(async()=>{await api('/auth/logout',{method:'POST',body:{}});lock();});
  const admin=!!me?.key?.admin;
 
