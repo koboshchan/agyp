@@ -5,6 +5,7 @@ import {rewriteModel,rewriteURLModel,repairSignatures,signatureError} from './re
 import {Store,type Key,type Usage} from './store.js';
 import {once} from 'node:events';
 import {abortable} from './bootstrap.js';
+import {admissionError} from './diagnostics.js';
 
 const strip=new Set(['host','authorization','proxy-authorization','cookie','connection','keep-alive','transfer-encoding','te','trailer','upgrade','content-length','accept-encoding','forwarded','x-forwarded-for','x-forwarded-proto','x-forwarded-host','x-csrf-token','set-cookie','x-goog-api-key','x-client-secret']);
 // The switcher handler forwards the request method/path without an RPC allowlist
@@ -37,7 +38,7 @@ export function extractModel(path:string,body:any){
  const byBody=typeof body?.model==='string'?body.model:undefined;
  const byQuery=new URL(path,'http://local').searchParams.get('model')??undefined;
  const models=[byBody,byPath&&decodeURIComponent(byPath),byQuery].filter(Boolean) as string[];
- if(new Set(models).size>1)throw Object.assign(new Error('Conflicting model identifiers'),{status:400});
+ if(new Set(models).size>1)throw admissionError('model_conflict','Conflicting model identifiers');
  return models[0]??'';
 }
 export function usageOf(data:any):Usage|undefined{
@@ -57,27 +58,27 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  if(!allowedProxy(req.method,req.originalUrl))throw Object.assign(new Error('Upstream action not allowed'),{status:403});
  const generation=req.method==='POST'&&/:(?:streamGenerateContent|generateContent)$/.test(req.path);
  const raw=Buffer.isBuffer(req.body)?req.body:Buffer.alloc(0);let body:any={};
- if(raw.length){try{body=JSON.parse(raw.toString());}catch{if(generation)throw Object.assign(new Error('Expected JSON body'),{status:400});}}
- if(!body||typeof body!=='object'||Array.isArray(body)){if(generation)throw Object.assign(new Error('Expected JSON object'),{status:400});body={};}
+ if(raw.length){try{body=JSON.parse(raw.toString());}catch{if(generation)throw admissionError('invalid_json','Expected JSON body');}}
+ if(!body||typeof body!=='object'||Array.isArray(body)){if(generation)throw admissionError('invalid_root','Expected JSON object');body={};}
  const model=extractModel(req.originalUrl,body);
- if(generation&&!model)throw Object.assign(new Error('Model is required'),{status:400});
+ if(generation&&!model)throw admissionError('missing_model','Model is required');
  // Reserve a conservative upper bound before starting. byte length bounds text tokens;
  // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
  const bounded=boundedKey(key);
  if(bounded&&!generation&&!boundedControl(req.method,req.originalUrl))throw Object.assign(new Error('Unknown Cloud Code action requires an unlimited key'),{status:422});
  if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
  const internal=req.path.startsWith('/v1internal:');
- if(generation&&internal&&(!body.request||typeof body.request!=='object'||Array.isArray(body.request)))throw Object.assign(new Error('Internal generation requires request envelope'),{status:400});
- if(generation&&internal&&(body.generationConfig!==undefined||body.generation_config!==undefined))throw Object.assign(new Error('Mixed generation envelopes are not allowed'),{status:400});
- if(generation&&!internal&&body.request!==undefined)throw Object.assign(new Error('Unexpected nested request envelope'),{status:400});
+ if(generation&&internal&&(!body.request||typeof body.request!=='object'||Array.isArray(body.request)))throw admissionError('missing_request','Internal generation requires request envelope');
+ if(generation&&internal&&(body.generationConfig!==undefined||body.generation_config!==undefined))throw admissionError('mixed_envelope','Mixed generation envelopes are not allowed');
+ if(generation&&!internal&&body.request!==undefined)throw admissionError('nested_envelope','Unexpected nested request envelope');
  const target=internal?body.request:body;
- if(generation&&(target.generation_config!==undefined||target.generationConfig?.max_output_tokens!==undefined||target.generationConfig?.candidate_count!==undefined||target.generationConfig?.thinking_config!==undefined))throw Object.assign(new Error('Use canonical camelCase generation configuration'),{status:400});
+ if(generation&&(target.generation_config!==undefined||target.generationConfig?.max_output_tokens!==undefined||target.generationConfig?.candidate_count!==undefined||target.generationConfig?.thinking_config!==undefined))throw admissionError('noncanonical_config','Use canonical camelCase generation configuration');
  const gc=target?.generationConfig??{};
- if(generation&&(typeof gc!=='object'||Array.isArray(gc)))throw Object.assign(new Error('Invalid generation configuration'),{status:400});
+ if(generation&&(typeof gc!=='object'||Array.isArray(gc)))throw admissionError('invalid_config','Invalid generation configuration');
  if(generation&&bounded&&(gc.candidateCount??1)!==1)throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
  if(generation&&bounded&&gc.maxOutputTokens===undefined)throw Object.assign(new Error('Bounded keys require explicit generationConfig.maxOutputTokens'),{status:422});
  const maxOutput=gc.maxOutputTokens??0;
- if(generation&&gc.maxOutputTokens!==undefined&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>131072))throw Object.assign(new Error('maxOutputTokens must be 1..131072'),{status:400});
+ if(generation&&gc.maxOutputTokens!==undefined&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>131072))throw admissionError('invalid_output_bound','maxOutputTokens must be 1..131072');
  if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
  // Do not mutate generation JSON. Unlimited requests may omit output bounds.
  // Missing usage remains conservatively charged for bounded keys.

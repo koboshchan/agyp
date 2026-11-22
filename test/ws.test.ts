@@ -133,3 +133,59 @@ test('bounded WS bootstrap rejects query and raw variants without private fields
  assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test('every generation admission 400 has bounded value-free local diagnostics and no upstream work or charge',async()=>{
+ const {LocalAdmissionDiagnostics}=await import('../server/diagnostics.js');
+ const dir=mkdtempSync(join(tmpdir(),'agyp-ws-admission-')),store=new Store(dir),diagnostics=new LocalAdmissionDiagnostics();let calls=0,upstreamReject=false;
+ const upstream=createServer(async(req,res)=>{calls++;for await(const _ of req){}res.setHeader('content-type','application/json');if(upstreamReject){res.writeHead(400).end('{"error":{"message":"CANARY_UPSTREAM"}}');return;}res.end('{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1,"totalTokenCount":3}}');});
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false},{app,pool,bootstrap}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool,bootstrap,diagnostics);config.origin=await listen(server);
+ store.putAccount({id:'a',email:'fake@example.invalid',refresh_token:'fake',access_token:'fake',token_expiry:Date.now()+1e6,status:'ready',shared:false,blocked:false,buckets:[],cooldowns:{},denied:{},updated:Date.now()});
+ const key=store.createKey({name:'unlimited'}),bounded=store.createKey({name:'bounded',allowance:100000}),p=new Peer(config.origin),q=new Peer(config.origin);let n=0;
+ const valid={model:'gemini-flash',request:{contents:[{role:'user',parts:[{text:'CANARY_CONTENT'}]}]}};
+ const body=(o:any)=>JSON.stringify(o),internal='/v1internal:generateContent';
+ const cases:[string,string,string,string?][]=[
+  ['invalid_json','{"CANARY_PARSE":',internal],
+  ...[null,[],1,'CANARY_ROOT'].map(v=>['invalid_root',body(v),internal] as [string,string,string]),
+  ['missing_model',body({request:{}}),internal],
+  ['model_conflict',body(valid),internal+'?model=CANARY_QUERY'],
+  ['model_conflict',body(valid),'/v1/models/CANARY_PATH:generateContent'],
+  ...[undefined,null,[],1].map(request=>['missing_request',body({model:'gemini-flash',request}),internal] as [string,string,string]),
+  ...['generationConfig','generation_config'].map(k=>['mixed_envelope',body({...valid,[k]:{}}),internal] as [string,string,string]),
+  ['nested_envelope',body({request:{}}),'/v1/models/gemini-flash:generateContent'],
+  ['noncanonical_config',body({...valid,request:{generation_config:{}}}),internal],
+  ...['max_output_tokens','candidate_count','thinking_config'].map(k=>['noncanonical_config',body({...valid,request:{generationConfig:{[k]:1}}}),internal] as [string,string,string]),
+  ...[[],1,'CANARY_CONFIG',true].map(generationConfig=>['invalid_config',body({...valid,request:{generationConfig}}),internal] as [string,string,string]),
+  ...[0,-1,131073,1.5,'CANARY_BOUND',false,{}].map(maxOutputTokens=>['invalid_output_bound',body({...valid,request:{generationConfig:{maxOutputTokens}}}),internal] as [string,string,string]),
+ ];
+ try{
+  await p.auth(key.token);await q.auth(bounded.token);
+  const ids=new Set<string>();
+  for(const [reason,raw,path] of cases){
+   const before=calls;start(p,++n,raw,path);const r=await result(p);assert.equal(r.status,400,reason);const cid=JSON.parse(r.body).error.correlationId;assert.match(cid,/^[a-f0-9-]{36}$/);assert(!ids.has(cid));ids.add(cid);
+   const record=diagnostics.snapshot().at(-1)!;assert.equal(record.reason,reason);assert.equal(record.correlationId,cid);assert.equal(calls,before);assert.deepEqual({...store.used(key.key)},{input:0,output:0,total:0});assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+   assert.doesNotMatch(JSON.stringify(record),/CANARY|gemini-flash|fake/);
+  }
+  // Same authenticated connection, fresh request then synthetic history-shaped turn.
+  start(p,++n,body(valid));let r=await result(p);assert.equal(r.status,200);assert(!('correlationId' in JSON.parse(r.body)));
+  start(p,++n,body({...valid,request:{contents:[...valid.request.contents,{role:'model',parts:[{text:'CANARY_REPLY'}]},{role:'user',parts:[{text:'CANARY_FOLLOWUP'}]}]}}));r=await result(p);assert.equal(r.status,200);assert.equal(store.used(key.key).total,6);
+  const count=diagnostics.snapshot().length;
+  upstreamReject=true;start(p,++n,body(valid));r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Upstream request rejected/);assert(!JSON.parse(r.body).error.correlationId);assert.equal(diagnostics.snapshot().length,count);assert.equal(store.used(key.key).total,6);upstreamReject=false;
+  for(const raw of ['{',body({metadata:{ideType:'CANARY_ENUM'},CANARY_UNKNOWN:'CANARY_VALUE'})]){
+   const before=calls;start(q,++n,raw,'/v1internal:loadCodeAssist');r=await result(q);assert.equal(r.status,400);assert.equal(calls,before);assert.equal(diagnostics.snapshot().at(-1)!.reason,'invalid_bootstrap');assert.equal(diagnostics.snapshot().at(-1)!.correlationId,JSON.parse(r.body).error.correlationId);assert.doesNotMatch(JSON.stringify(diagnostics.snapshot()),/CANARY/);
+  }
+  assert.deepEqual({...store.used(bounded.key)},{input:0,output:0,total:0});
+  assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{await Promise.all([p.stop(),q.stop()]);await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('local diagnostics sanitizer cannot retain arbitrary keys, values, URLs, query or mutable references',async()=>{
+ const {LocalAdmissionDiagnostics,admissionShape}=await import('../server/diagnostics.js');
+ const diagnostics=new LocalAdmissionDiagnostics();
+ const raw=Buffer.from(JSON.stringify({CANARY_KEY:'CANARY_VALUE',model:'CANARY_MODEL',request:{CANARY_REQUEST:'CANARY_VALUE',contents:[{CANARY_NESTED:'CANARY_TEXT'}],generationConfig:{maxOutputTokens:'CANARY_TOKENS',thinkingConfig:{thinkingBudget:'CANARY_BUDGET',CANARY_DEEP:'CANARY_VALUE'}}},metadata:{ideType:'CANARY_ENUM',CANARY_META:'CANARY_VALUE'}}));
+ for(let i=0;i<40;i++)diagnostics.record('CANARY_METHOD','/v1internal:CANARY_PATH?CANARY_QUERY',raw,'invalid_output_bound');
+ const records=diagnostics.snapshot();assert.equal(records.length,32);assert(records.every(r=>r.method==='other'&&r.path==='other'));assert.doesNotMatch(JSON.stringify(records),/CANARY/);assert(Buffer.byteLength(JSON.stringify(records))<=32*8192);
+ assert.equal(records[0].shape.unknownKeys,4);assert(records[0].shape.fields.some(f=>f.field==='request.generationConfig.thinkingConfig.thinkingBudget'&&f.type==='string'));
+ records[0].shape.fields.push({field:'CANARY_MUTATION',type:'CANARY_TYPE'});assert.doesNotMatch(JSON.stringify(diagnostics.snapshot()),/CANARY/);
+ assert.equal(admissionShape(Buffer.alloc(16*1024*1024+1)).truncated,true);
+ assert.equal(diagnostics.record('POST','/v1internal:generateContent',raw,'CANARY_REASON' as any),undefined);
+});

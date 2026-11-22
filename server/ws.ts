@@ -9,6 +9,7 @@ import {Store,type Key} from './store.js';
 import {Pool} from './pool.js';
 import {proxy,allowedProxy,boundedKey} from './proxy.js';
 import {createBootstrap,allowedBootstrap} from './bootstrap.js';
+import {AdmissionError,LocalAdmissionDiagnostics} from './diagnostics.js';
 
 const MAX_BODY=16*1024*1024,MAX_BUFFER=1024*1024;
 const id=z.string().regex(/^[a-f0-9]{32}$/);
@@ -37,7 +38,7 @@ class SocketResponse extends Writable{
 }
 type Pending={method:string;path:string;headers:Record<string,string>;parts:Buffer[];bytes:number;timer:NodeJS.Timeout;res?:SocketResponse};
 
-export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=createBootstrap(store,pool)){
+export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=createBootstrap(store,pool),diagnostics?:LocalAdmissionDiagnostics){
  const wss=new WebSocketServer({noServer:true,maxPayload:65536,perMessageDeflate:false});
  const jobs=new Set<Promise<unknown>>();let stopping=false;
  let active=0,buffered=0,rateWindow=Date.now(),rateTotal=0;const perKey=new Map<string,number>(),ipRates=new Map<string,number>(),ipConnections=new Map<string,number>();
@@ -111,7 +112,12 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
     const req={method:p.method,originalUrl:p.path,path:new URL(p.path,'http://local').pathname,headers:Object.fromEntries(Object.entries(p.headers).map(([k,v])=>[k.toLowerCase(),v])),body:Buffer.concat(p.parts)} as Request;
     p.parts=[];
     const job=(boundedKey(key as Key)&&allowedBootstrap(req.method,req.originalUrl)?bootstrap(req,res as unknown as Response,key as Key):proxy(req,res as unknown as Response,key as Key,store,pool)).catch((err:any)=>{
-     if(!res.headersSent&&!res.destroyed)res.status(err instanceof z.ZodError?400:[400,401,403,413,422,429].includes(err?.status)?err.status:502).json({error:{message:'Request rejected'}});
+     if(!res.headersSent&&!res.destroyed){
+      const status=err instanceof z.ZodError?400:[400,401,403,413,422,429].includes(err?.status)?err.status:502;
+      const reason=err instanceof AdmissionError?err.reason:allowedBootstrap(req.method,req.originalUrl)&&(err instanceof z.ZodError||err?.status===400)?'invalid_bootstrap':undefined;
+      const correlationId=status===400&&reason?diagnostics?.record(req.method,req.originalUrl,req.body,reason):undefined;
+      res.status(status).json({error:{message:'Request rejected',...(correlationId?{correlationId}:{})}});
+     }
      else if(!res.writableEnded)res.destroy();
     }).finally(()=>{remove(f.id);jobs.delete(job);});
     jobs.add(job);

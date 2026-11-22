@@ -459,3 +459,43 @@ func TestCloudCodeCompatibilityMatrix(t *testing.T) {
 		}
 	}
 }
+
+// Local shim errors have distinct plain-text messages, not the server WSS
+// admission catch's JSON Request rejected. None may contact upstream/auth.
+type failingAdmissionBody struct{}
+
+func (failingAdmissionBody) Read([]byte) (int, error) { return 0, fmt.Errorf("CANARY_READ_ERROR") }
+func (failingAdmissionBody) Close() error             { return nil }
+func TestLocal400Boundaries(t *testing.T) {
+	var calls atomic.Int32
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); w.WriteHeader(500) }))
+	defer remote.Close()
+	base, _ := url.Parse(remote.URL)
+	s := &shim{auth: &auth{base: base}, http: remote.Client(), capability: "fixture-capability"}
+	proof := "Basic " + base64.StdEncoding.EncodeToString([]byte("agyp:fixture-capability"))
+	tests := []struct {
+		name    string
+		req     *http.Request
+		message string
+	}{
+		{"absolute https", httptest.NewRequest("POST", "https://cloudcode-pa.googleapis.com/v1internal:generateContent", nil), "invalid proxy target"},
+		{"CONNECT missing port", httptest.NewRequest("CONNECT", "http://fixture.invalid", nil), "invalid CONNECT target"},
+		{"body read failure", httptest.NewRequest("POST", "http://cloudcode-pa.googleapis.com/v1internal:generateContent", failingAdmissionBody{}), "body read failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.req.Header.Set("Proxy-Authorization", proof)
+			w := httptest.NewRecorder()
+			s.ServeHTTP(w, tc.req)
+			if w.Code != 400 || strings.TrimSpace(w.Body.String()) != tc.message {
+				t.Fatalf("unexpected response %d %q", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "CANARY") {
+				t.Fatal("raw error leaked")
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatal("local rejection contacted upstream")
+	}
+}
