@@ -23,6 +23,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -351,6 +352,50 @@ func childEnv(env []string, addr, capability string) []string {
 	proxy := proxyURL.String()
 	return append(out, "CLOUD_CODE_URL="+addr+"/"+capability, "HTTP_PROXY="+proxy, "HTTPS_PROXY="+proxy, "http_proxy="+proxy, "https_proxy="+proxy, "NO_PROXY=localhost,127.0.0.1,::1,speech.googleapis.com", "no_proxy=localhost,127.0.0.1,::1,speech.googleapis.com")
 }
+func debugPhase(phase string) {
+	if os.Getenv("AGYP_DEBUG") == "1" {
+		fmt.Fprintf(os.Stderr, "agyp debug phase=%s pid=%d at=%s\n", phase, os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
+	}
+}
+
+// terminalDeliveredInterrupt reports whether the foreground terminal already
+// delivered SIGINT to both us and the child. os/signal does not expose siginfo,
+// so a PID-directed SIGINT in the same cooked-terminal state is indistinguishable;
+// the bounded shutdown below still guarantees it cannot leave a stuck child.
+func terminalDeliveredInterrupt(child *os.Process) bool {
+	group, err := syscall.Getpgid(child.Pid)
+	if err != nil || group != syscall.Getpgrp() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	stty := exec.CommandContext(ctx, "stty", "-a")
+	stty.Stdin = os.Stdin
+	state, err := stty.Output()
+	if err != nil {
+		return false
+	}
+	isig := false
+	for _, field := range strings.Fields(string(state)) {
+		if strings.Trim(field, ";") == "isig" {
+			isig = true
+		}
+	}
+	if !isig {
+		return false
+	}
+	// ps exposes the controlling terminal's foreground pgid on Linux and macOS,
+	// without platform-specific ioctl structures or unsafe pointers.
+	ps := exec.CommandContext(ctx, "ps", "-o", "tpgid=", "-p", fmt.Sprint(os.Getpid()))
+	out, err := ps.Output()
+	if err != nil {
+		return false
+	}
+	var foreground int
+	_, err = fmt.Sscan(string(out), &foreground)
+	return err == nil && foreground == group
+}
+
 func run(args []string) int {
 	if len(args) == 1 && args[0] == "--version" {
 		fmt.Fprintln(os.Stdout, "agyp "+version)
@@ -374,10 +419,51 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, e)
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Register before any network operation. Keep the child in the foreground
+	// process group inherited from the shell: a separate background group cannot
+	// read the controlling terminal (SIGTTIN), including its Ctrl-C input.
+	root, interrupt := context.WithCancel(context.Background())
+	defer interrupt()
+	signals := make(chan os.Signal, 8)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	var interrupted atomic.Int32
+	var processMu sync.Mutex
+	var process *os.Process
+	finished := make(chan struct{})
+	defer close(finished)
+	go func() {
+		select {
+		case sig := <-signals:
+			v := sig.(syscall.Signal)
+			interrupted.Store(int32(v))
+			interrupt()
+			processMu.Lock()
+			child := process
+			if child != nil && (v != syscall.SIGINT || !terminalDeliveredInterrupt(child)) {
+				_ = child.Signal(v)
+			}
+			processMu.Unlock()
+			if child != nil {
+				select {
+				case <-finished:
+					return
+				case <-time.After(3 * time.Second):
+					_ = child.Kill()
+				}
+			}
+		case <-finished:
+		}
+	}()
+	ctx, cancel := context.WithTimeout(root, 30*time.Second)
+	debugPhase("auth_start")
 	_, e = a.session(ctx, "")
+	debugPhase("auth_end")
 	cancel()
 	if e != nil {
+		if n := interrupted.Load(); n != 0 {
+			return 128 + int(n)
+		}
 		fmt.Fprintln(os.Stderr, e)
 		return 1
 	}
@@ -395,29 +481,48 @@ func run(args []string) int {
 	capability := base64.RawURLEncoding.EncodeToString(capBytes)
 	srv := &http.Server{Handler: &shim{a, client(), capability}, ReadHeaderTimeout: 15 * time.Second}
 	go srv.Serve(ln)
+	debugPhase("proxy_bound")
 	defer srv.Close()
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Env = childEnv(os.Environ(), "http://"+ln.Addr().String(), capability)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if e = cmd.Start(); e != nil {
+	// Snapshot terminal settings before the TUI enters raw mode. Restore even
+	// when an unresponsive child needs forced termination.
+	stty := exec.Command("stty", "-g")
+	stty.Stdin = os.Stdin
+	if state, err := stty.Output(); err == nil {
+		defer func() {
+			restore := exec.Command("stty", strings.TrimSpace(string(state)))
+			restore.Stdin = os.Stdin
+			_ = restore.Run()
+		}()
+	}
+	processMu.Lock()
+	if n := interrupted.Load(); n != 0 {
+		processMu.Unlock()
+		return 128 + int(n)
+	}
+	debugPhase("child_start")
+	e = cmd.Start()
+	if e == nil {
+		process = cmd.Process
+		debugPhase("child_started")
+	}
+	processMu.Unlock()
+	if e != nil {
 		fmt.Fprintln(os.Stderr, "cannot start child command")
 		return 1
 	}
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(signals)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	for {
 		select {
-		case sig := <-signals:
-			if v, ok := sig.(syscall.Signal); ok {
-				syscall.Kill(-cmd.Process.Pid, v)
-			}
 		case e := <-done:
+			if n := interrupted.Load(); n != 0 {
+				return 128 + int(n)
+			}
 			if e == nil {
 				return 0
 			}
