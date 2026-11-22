@@ -24,7 +24,7 @@ test('REST full Cloud Code compatibility preserves methods, path/query, request 
  const payload=(path:string)=>path.startsWith('/v1internal')?raw:'{ \"contents\":[],\"generationConfig\":{\"maxOutputTokens\":10},\"n\":1e+05 }';
  const request=(c:typeof matrix[number],token:string)=>fetch(config.origin+c.path,{method:c.method,headers:{authorization:'Bearer '+token,'content-type':'application/json','cookie':'evil','x-goog-api-key':'evil','x-client-secret':'evil'},body:['GET','HEAD'].includes(c.method)?undefined:payload(c.path)});
  try{
-  const expectedCharge=(c:typeof matrix[number])=>c.method==='POST'&&/:(?:generateContent|streamGenerateContent)$/.test(c.path)?{input:Buffer.byteLength(payload(c.path))+1024,output:10}:{input:0,output:0};
+  const expectedCharge=(_c:typeof matrix[number])=>({input:0,output:0});
   const checkCharge=(key:any,before:any,c:typeof matrix[number])=>{const charge=expectedCharge(c),after=store.used(key);assert.deepEqual({...after},{input:before.input+charge.input,output:before.output+charge.output,total:before.total+charge.input+charge.output},c.method+' '+c.path+' exact accounting');};
   for(const c of matrix.filter(c=>c.allowed)){
    const unBefore=store.used(un.key),boundedBefore=store.used(bounded.key);

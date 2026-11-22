@@ -37,8 +37,8 @@ test('websocket proof, exact proxy pipeline, allowance, usage, per-request revoc
   start(p,1,raw);let r=await result(p);assert.equal(r.status,200);assert(r.body.includes('OK'));assert.equal(rawSeen,raw);assert.equal(ua,'unchanged-client');assert.equal(store.used(key.key).total,3);assert.equal(calls,1);
   start(p,90,'{}');r=await result(p);assert.equal(r.status,400);assert.deepEqual(JSON.parse(r.body),{error:{message:'Request rejected'}});assert.equal(calls,1);assert.equal(store.used(key.key).total,3);
   const bounded=store.createKey({name:'bounded',allowance:10000}),q=make();await q.auth(bounded.token);
-  start(q,1,raw);r=await result(q);assert.equal(r.status,422);assert.equal(calls,1);assert.equal(store.used(bounded.key).total,0);
-  start(q,2,JSON.stringify({model:'gemini-flash',request:{generationConfig:{maxOutputTokens:10}}}));r=await result(q);assert.equal(r.status,200);assert.equal(store.used(bounded.key).total,3);assert.equal(calls,2);
+  start(q,1,raw);r=await result(q);assert.equal(r.status,200);assert.equal(calls,2);assert.equal(store.used(bounded.key).total,3);
+  start(q,2,JSON.stringify({model:'gemini-flash',request:{contents:[{parts:[{inlineData:{mimeType:'image/png',data:'dGVzdA=='}}]}],generationConfig:{maxOutputTokens:1000000}}}));r=await result(q);assert.equal(r.status,200);assert.equal(store.used(bounded.key).total,6);assert.equal(calls,3);
   const before=calls;const closed=once(p.ws,'close');start(p,2,raw,'//example.invalid/v1internal:generateContent');await closed;assert.equal(calls,before);
   const v=make();await v.auth(key.token);store.revoke(key.key.id);const revoked=once(v.ws,'close');start(v,1,raw);await revoked;assert.equal(calls,before);
   const bad=make();const c=await bad.next();bad.send({type:'auth',keyId:bounded.key.id,proof:createHmac('sha256',bounded.token).update(c.nonce).digest('hex')});await once(bad.ws,'close');assert.equal(calls,before);
@@ -100,7 +100,7 @@ test('full Cloud Code namespace matrix over authenticated WS preserves service f
  const invoke=async(peer:Peer,c:typeof matrix[number])=>{const n=rid(++id),body=['GET','HEAD'].includes(c.method)?'':payload(c.path);peer.send({type:'start',id:n,method:c.method,path:c.path,headers:{'content-type':'application/json'},deadline:Date.now()+10000});if(body)peer.send({type:'data',id:n,data:Buffer.from(body).toString('base64')});peer.send({type:'end',id:n});return result(peer);};
  try{
   await p.auth(key.token);await q.auth(bounded.token);
-  const expectedCharge=(c:typeof matrix[number])=>c.method==='POST'&&/:(?:generateContent|streamGenerateContent)$/.test(c.path)?{input:Buffer.byteLength(payload(c.path))+1024,output:10}:{input:0,output:0};
+  const expectedCharge=(_c:typeof matrix[number])=>({input:0,output:0});
   const checkCharge=(key:any,before:any,c:typeof matrix[number])=>{const charge=expectedCharge(c),after=store.used(key);assert.deepEqual({...after},{input:before.input+charge.input,output:before.output+charge.output,total:before.total+charge.input+charge.output},c.method+' '+c.path+' exact accounting');};
   for(const c of matrix.filter(c=>c.allowed)){
    const unBefore=store.used(key.key),boundedBefore=store.used(bounded.key);
@@ -293,10 +293,11 @@ test('uniform exact one-million output ceiling preserves every key budget over a
   const bounded=store.createKey({name:'bounded-boundary',allowance:1e7}),q=new Peer(config.origin);peers.push(q);await q.auth(bounded.token);
   for(const value of [1,1000000]){const raw=makeRaw(value,true);start(q,++id,raw);assert.equal((await result(q)).status,200);assert.equal(rawSeen,raw);}
   const capped=store.createKey({name:'cap-enforcement',outputCap:4}),c=new Peer(config.origin);peers.push(c);await c.auth(capped.token);const beforeCap=calls;
-  start(c,++id,makeRaw(5,true));assert.equal((await result(c)).status,429);assert.equal(calls,beforeCap);assert.equal(store.used(capped.key).total,0);
+  for(let n=0;n<4;n++){start(c,++id,makeRaw(1000000,true));assert.equal((await result(c)).status,200);}
+  start(c,++id,makeRaw(5,true));assert.equal((await result(c)).status,429);assert.equal(calls,beforeCap+4);assert.equal(store.used(capped.key).total,12);
   const unlimited=store.createKey({name:'upstream-validation'}),p=new Peer(config.origin);peers.push(p);await p.auth(unlimited.token);
   reject=true;const raw=makeRaw(1000000,true);start(p,++id,raw,'/v1internal:streamGenerateContent');let r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Upstream request rejected/);assert.doesNotMatch(r.body,/CANARY/);assert.equal(rawSeen,raw);assert.equal(store.used(unlimited.key).total,0);assert.equal(reservations(),0);
-  reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,1000000);assert.equal(store.used(unlimited.key).input,Buffer.byteLength(raw)+1024);assert.equal(reservations(),0);
+  reject=false;missingUsage=true;start(p,++id,raw);r=await result(p);assert.equal(r.status,200);assert.equal(store.used(unlimited.key).output,0);assert.equal(store.used(unlimited.key).input,0);assert.equal(reservations(),0);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
 

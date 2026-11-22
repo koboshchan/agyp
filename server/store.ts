@@ -40,8 +40,8 @@ export class Store {
  CREATE TABLE IF NOT EXISTS challenges(nonce TEXT PRIMARY KEY,key_id TEXT,expires INTEGER);
  CREATE TABLE IF NOT EXISTS oauth(state TEXT PRIMARY KEY,session_hash TEXT,verifier TEXT,redirect TEXT,expires INTEGER);
  `);
-  // Crash-interrupted requests remain charged at their admission bound, never silently free.
-  this.db.exec(`INSERT INTO usage(key_id,model,input,output,cached,total,time,status) SELECT key_id,model,input,output,0,input+output,time,599 FROM reservations; DELETE FROM reservations;`);
+  // No fabricated charge for interrupted requests without recorded provider usage.
+  this.db.exec('DELETE FROM reservations;');
   const admin=this.db.prepare('SELECT token FROM keys WHERE admin=1').get() as any;
   this.adminToken=admin?.token??this.createKey({name:'Administrator',admin:1}).token;
  }
@@ -80,16 +80,14 @@ export class Store {
  revoke(id:string){this.db.prepare('UPDATE keys SET revoked=1 WHERE id=? AND admin=0').run(id);this.db.prepare('DELETE FROM sessions WHERE key_id=?').run(id);}
  deleteKey(id:string){this.revoke(id);this.db.prepare("UPDATE keys SET name='Deleted key' WHERE id=? AND admin=0").run(id);}
  used(k:Key){
-  return this.db.prepare(`SELECT COALESCE(SUM(input),0) input,COALESCE(SUM(output),0) output,COALESCE(SUM(total),0) total FROM (
- SELECT input,output,total FROM usage WHERE key_id=? AND time>=?
- UNION ALL SELECT input,output,input+output total FROM reservations WHERE key_id=? AND time>=?)`).get(k.id,windowStart(k.period),k.id,windowStart(k.period)) as {input:number;output:number;total:number};
+  return this.db.prepare(`SELECT COALESCE(SUM(input),0) input,COALESCE(SUM(output),0) output,COALESCE(SUM(total),0) total FROM usage WHERE key_id=? AND time>=?`).get(k.id,windowStart(k.period)) as {input:number;output:number;total:number};
  }
- reserve(k:Key,model:string,input:number,output:number){
+ reserve(k:Key,model:string,_input:number,_output:number,admit=true){
   if(!this.valid(this.key(k.id)))throw Object.assign(new Error('Key expired or revoked'),{status:401});
   const used=this.used(k);
-  if((k.allowance!==null&&used.total+input+output>k.allowance)||(k.inputCap!==null&&used.input+input>k.inputCap)||(k.outputCap!==null&&used.output+output>k.outputCap))
-   throw Object.assign(new Error('Token allowance exhausted or insufficient for this request. Reset: '+(nextReset(k.period)?new Date(nextReset(k.period)!).toISOString():'never')),{status:429});
-  const id=secret();this.db.prepare('INSERT INTO reservations VALUES(?,?,?,?,?,?)').run(id,k.id,model,input,output,Date.now());return id;
+  if(admit&&((k.allowance!==null&&used.total>=k.allowance)||(k.inputCap!==null&&used.input>=k.inputCap)||(k.outputCap!==null&&used.output>=k.outputCap)))
+   throw Object.assign(new Error('Token allowance exhausted. Reset: '+(nextReset(k.period)?new Date(nextReset(k.period)!).toISOString():'never')),{status:429});
+  const id=secret();this.db.prepare('INSERT INTO reservations VALUES(?,?,?,?,?,?)').run(id,k.id,model,0,0,Date.now());return id;
  }
  finish(id:string,u:Usage,status:number){const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(id) as any;if(!r)return;
   this.db.exec('BEGIN IMMEDIATE');try{

@@ -25,10 +25,8 @@ test('native Go websocket client interoperates with real Node adapter, concurren
   const internalPayload='{ "metadata":{"ideType":"ANTIGRAVITY"}, "model":"gemini-flash", "request":{"generationConfig":{"maxOutputTokens":10}}, "n":1e+05 }';
   const modelPayload='{ "generationConfig":{"maxOutputTokens":10}, "n":1e+05 }';
   const generationCases=matrix.filter(c=>c.allowed&&c.method==='POST'&&/:(?:generateContent|streamGenerateContent)$/.test(c.path));
-  // Matrix generations deliberately omit provider usage: exact conservative input
-  // byte bound + 1024 and explicit output 10 must be charged, never zero.
-  const expectedInput=10+generationCases.reduce((n,c)=>n+Buffer.byteLength(c.path.startsWith('/v1internal')?internalPayload:modelPayload)+1024,0);
-  const expectedOutput=5+generationCases.length*10;
+  // Without provider metadata, generation fixtures add no estimated charge.
+  const expectedInput=10,expectedOutput=5;
   const used=store.used(key.key);assert.equal(used.input,expectedInput);assert.equal(used.output,expectedOutput);assert.equal(used.total,expectedInput+expectedOutput);
   assert.equal((store.db.prepare('SELECT COUNT(*) n FROM sessions').get() as any).n,0);
   assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);

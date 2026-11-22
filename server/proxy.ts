@@ -63,11 +63,9 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  if(!body||typeof body!=='object'||Array.isArray(body)){if(generation)throw admissionError('invalid_root','Expected JSON object');body={};}
  const model=extractModel(req.originalUrl,body);
  if(generation&&!model)throw admissionError('missing_model','Model is required');
- // Reserve a conservative upper bound before starting. byte length bounds text tokens;
- // multimodal bounded keys require countTokens first (arbitrary media has no byte bound).
+ // Admit using recorded usage only, independent of text/media size or estimated output.
  const bounded=boundedKey(key);
  if(bounded&&!generation&&!boundedControl(req.method,req.originalUrl))throw Object.assign(new Error('Unknown Cloud Code action requires an unlimited key'),{status:422});
- if(generation&&bounded&&hasMedia(body))throw Object.assign(new Error('Media requests require an unlimited key; text allowances cannot safely bound media tokens'),{status:422});
  const internal=req.path.startsWith('/v1internal:');
  if(generation&&internal&&(!body.request||typeof body.request!=='object'||Array.isArray(body.request)))throw admissionError('missing_request','Internal generation requires request envelope');
  if(generation&&internal&&(body.generationConfig!==undefined||body.generation_config!==undefined))throw admissionError('mixed_envelope','Mixed generation envelopes are not allowed');
@@ -76,10 +74,8 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
  if(generation&&(target.generation_config!==undefined||target.generationConfig?.max_output_tokens!==undefined||target.generationConfig?.candidate_count!==undefined||target.generationConfig?.thinking_config!==undefined))throw admissionError('noncanonical_config','Use canonical camelCase generation configuration');
  const gc=target?.generationConfig??{};
  if(generation&&(typeof gc!=='object'||Array.isArray(gc)))throw admissionError('invalid_config','Invalid generation configuration');
- if(generation&&bounded&&(gc.candidateCount??1)!==1)throw Object.assign(new Error('Bounded keys require one candidate'),{status:422});
- if(generation&&bounded&&gc.maxOutputTokens===undefined)throw Object.assign(new Error('Bounded keys require explicit generationConfig.maxOutputTokens'),{status:422});
  const maxOutput=gc.maxOutputTokens??0;
- // Uniform admission policy for every key; reservations still enforce each key's caps.
+ // Uniform model-parameter validation for every key, never a budget estimate.
  // Google remains responsible for model-specific limits. Forward raw bytes unchanged.
  const outputCeiling=1000000;
  if(generation&&gc.maxOutputTokens!==undefined&&(!Number.isSafeInteger(maxOutput)||maxOutput<1||maxOutput>outputCeiling))throw admissionError('invalid_output_bound','maxOutputTokens outside supported range');
@@ -92,11 +88,9 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
   if(gc.maxOutputTokens!==undefined&&(!isLosslessNumber(literal)||compareNumber(literal.value,String(maxOutput))!==0))
    throw admissionError('invalid_output_bound','maxOutputTokens outside supported range');
  }
- if(generation&&bounded&&(gc.thinkingConfig?.thinkingBudget??0)>maxOutput)throw Object.assign(new Error('Thinking budget exceeds reserved output'),{status:422});
- // Do not mutate generation JSON. Unlimited requests may omit output bounds.
- // Missing usage remains conservatively charged for bounded keys.
- const input=generation?raw.length+1024:0,output=generation?maxOutput:0;
- const reservation=store.reserve(key,model||'(control)',input,output);
+ // Do not mutate generation JSON. Any key may omit output bounds.
+ // In-flight bookkeeping has no estimated token value and does not gate admission.
+ const reservation=store.reserve(key,model||'(control)',0,0,generation);
  let final:Usage|undefined,status=502,started=false;
  const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),600_000);
  const disconnect=()=>{if(!res.writableEnded)abort.abort();};res.on('close',disconnect);
@@ -119,8 +113,6 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
    if(parsedPath.origin!=='http://agyp.invalid')throw new Error('Invalid upstream path');
    url.pathname=parsedPath.pathname;url.search=parsedPath.search;
    const send=()=>{
-    // A reactive repair can grow the payload. Never exceed the admitted input bound.
-    if(generation&&bounded&&requestRaw.length>input)throw new Error('Repaired request exceeds reserved input');
     return fetch(url,{method:req.method,headers,body:['GET','HEAD'].includes(req.method)?undefined:new Uint8Array(requestRaw),redirect:'error',signal:abort.signal});
    };
    let upstream=await send();
@@ -171,8 +163,8 @@ export async function proxy(req:Request,res:Response,key:Key,store:Store,pool:Po
   final={input:0,output:0,cached:0,total:0};
  }catch(e){if(!started&&!abort.signal.aborted){res.status(502).json({error:{message:'Upstream connection failed'}});}else if(!res.writableEnded)res.destroy();}
  finally{clearTimeout(timer);res.off('close',disconnect);
-  // Missing usage after a generation may have spent tokens. Charge its reservation, not zero.
-  store.finish(reservation,final??{input,output,cached:0,total:input+output},status);
+  // Only reported Google usage is chargeable. Missing metadata is not an estimate.
+  store.finish(reservation,final??{input:0,output:0,cached:0,total:0},status);
  }
 }
 async function readBounded(r:globalThis.Response,max:number){const chunks:Uint8Array[]=[];let n=0;if(r.body)for await(const c of r.body){n+=c.length;if(n>max)break;chunks.push(c);}return Buffer.concat(chunks);}

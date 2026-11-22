@@ -48,7 +48,7 @@ test('single-port HTTP handshake RBAC CSRF replay exact proxy rotation streaming
  const stats=await(await call('/api/stats',{headers:nh})).json() as any;assert.equal(stats.models[0].input,12);assert.equal(stats.models[0].output,4);assert.equal(stats.models[0].cached,3);
  const ownMe=await(await call('/api/me',{headers:nh})).json() as any;assert.equal(ownMe.key.used.total,16);
  const accounts=await(await call('/api/accounts',{headers:ah})).text();assert(!accounts.includes('GOOGLE-REFRESH'));assert(!accounts.includes('google-a'));
- const small=store.createKey({name:'tiny',allowance:1}),sm=await login(small.token);assert.equal((await call('/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+sm.data.token,'content-type':'application/json'},body:reqBody})).status,429);
+ const small=store.createKey({name:'tiny',allowance:0}),sm=await login(small.token);assert.equal((await call('/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+sm.data.token,'content-type':'application/json'},body:reqBody})).status,429);
  // Mixed envelopes cannot reduce the reservation below the forwarded generation limit.
  const before=calls.length;
  for(const b of [

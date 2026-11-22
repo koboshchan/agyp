@@ -24,10 +24,54 @@ test('expired, cross-key challenges and revoked sessions reject',()=>{
  const session=s.session(a.key);assert.equal(s.authSession(session.token)?.key.id,a.key.id);assert.equal(s.authSession(a.token),undefined);s.revoke(a.key.id);assert.equal(s.authSession(session.token),undefined);
  }finally{cleanup();}
 });
-test('admission reservations prevent concurrency overspend; accounting separates cache',()=>{
- const {s,cleanup}=setup();try{const a=s.createKey({name:'capped',allowance:100,inputCap:80,outputCap:40});const r=s.reserve(a.key,'exact',60,30);assert.throws(()=>s.reserve(a.key,'exact',10,10),/allowance/);s.finish(r,{input:20,output:10,cached:5,total:30},200);
+test('admission ignores estimates and in-flight work; actual accounting separates cache',()=>{
+ const {s,cleanup}=setup();try{const a=s.createKey({name:'capped',allowance:100,inputCap:80,outputCap:40});const r=s.reserve(a.key,'exact',60,30);const second=s.reserve(a.key,'exact',1e9,1e9);assert.equal(s.used(a.key).total,0);s.finish(second,{input:0,output:0,cached:0,total:0},200);s.finish(r,{input:20,output:10,cached:5,total:30},200);
  assert.equal(s.used(a.key).total,30);const stats=s.stats(a.key.id).models[0] as any;assert.equal(stats.noncached,15);assert.equal(stats.cached,5);
  const other=s.createKey({name:'other'});assert.equal(s.stats(other.key.id).models.length,0);
  }finally{cleanup();}
 });
 test('UTC calendar daily weekly monthly reset',()=>{const now=Date.UTC(2026,10,21,20);assert.equal(windowStart('daily',now),Date.UTC(2026,10,21));assert.equal(windowStart('weekly',now),Date.UTC(2026,10,16));assert.equal(nextReset('monthly',now),Date.UTC(2026,11,1));assert.equal(nextReset('never',now),null);});
+test('actual-only caps allow one request and concurrent overshoot, charge once, then reject at recorded limits',()=>{
+ const {s,cleanup}=setup();try{
+  for(const cap of ['allowance','inputCap','outputCap'] as const){
+   const {key}=s.createKey({name:cap,[cap]:5});
+   const a=s.reserve(key,'media',1e9,1e9),b=s.reserve(key,'media',1e9,1e9);
+   assert.deepEqual({...s.used(key)},{input:0,output:0,total:0});
+   const usage={input:7,output:8,cached:2,total:15};
+   s.finish(a,usage,200);
+   assert.throws(()=>s.reserve(key,'media',0,0),/exhausted/);
+   s.finish(b,usage,200);s.finish(b,usage,200);
+   assert.deepEqual({...s.used(key)},{input:14,output:16,total:30});
+   const controls=s.reserve(key,'quota',0,0,false);s.finish(controls,{input:0,output:0,cached:0,total:0},200);
+   const {key:exact}=s.createKey({name:cap+'-exact',[cap]:5});
+   s.finish(s.reserve(exact,'m',0,0),{input:5,output:5,cached:0,total:10},200);
+   assert.throws(()=>s.reserve(exact,'m',0,0),/exhausted/);
+  }
+ }finally{cleanup();}
+});
+test('actual usage resets by key period, isolates keys, and never-reset retains old usage',()=>{
+ const {s,cleanup}=setup();try{
+  for(const period of ['daily','weekly','monthly','never']){
+   const {key}=s.createKey({name:period,period,allowance:5}),r=s.reserve(key,'m',0,0);
+   s.db.prepare('UPDATE reservations SET time=? WHERE id=?').run(1,r);
+   s.finish(r,{input:6,output:1,cached:0,total:7},200);
+   assert.equal(s.used(key).total,period==='never'?7:0);
+   if(period==='never')assert.throws(()=>s.reserve(key,'m',0,0),/exhausted/);
+   else s.finish(s.reserve(key,'m',0,0),{input:0,output:0,cached:0,total:0},200);
+  }
+  assert.equal(s.used(s.createKey({name:'isolated',allowance:1}).key).total,0);
+ }finally{cleanup();}
+});
+test('restart discards old admission estimates without inventing usage',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-restart-'));let s=new Store(dir);
+ try{
+  const {key}=s.createKey({name:'interrupted',allowance:1});
+  const r=s.reserve(key,'m',0,0);
+  s.db.prepare('UPDATE reservations SET input=900000,output=900000 WHERE id=?').run(r);
+  s.close();s=new Store(dir);
+  assert.equal(s.used(key).total,0);
+  assert.equal((s.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+  s.finish(s.reserve(key,'m',0,0),{input:1,output:2,cached:0,total:3},200);
+  assert.equal(s.used(key).total,3);
+ }finally{s.close();rmSync(dir,{recursive:true,force:true});}
+});

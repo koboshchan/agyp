@@ -40,11 +40,42 @@ test('raw passthrough, forced refresh same account, reactive repair, family403 a
  const raw='{ "model":"gemini-flash", "request": {"contents":[{"parts":[{"text":"hi"}]}]}, "n":1e+05 }';
  let r=await call(raw);assert.equal(r.status,200);await r.text();assert.equal(calls.at(-1)?.body,raw);assert.equal(calls.at(-1)?.ua,'client-unchanged');
  const bounded=store.createKey({name:'bounded',allowance:10000}),bs=store.session(bounded.key);let before=calls.length;
- r=await call(raw,bs.token);assert.equal(r.status,422);assert((await r.text()).includes('explicit'));assert.equal(calls.length,before);assert.equal(store.used(bounded.key).total,0);
+ r=await call(raw,bs.token);assert.equal(r.status,200);await r.text();assert.equal(calls.length,before+1);assert.equal(store.used(bounded.key).total,3);
  mode='401';r=await call(raw);assert.equal(r.status,200);await r.text();assert.equal(refreshed,1);assert.deepEqual(calls.slice(-2).map(c=>c.auth),['Bearer old-a','Bearer renewed-a']);assert(calls.slice(-2).every(c=>c.body===raw));
  mode='sig';const sig=JSON.stringify({model:'gemini-flash',request:{contents:[{parts:[{functionCall:{name:'x'},thoughtSignature:'bad'}]}]}});before=calls.length;r=await call(sig);assert.equal(r.status,200);await r.text();assert.equal(calls.length,before+2);assert.equal(calls[before].body,sig);assert(calls.at(-1)?.body.includes('skip_thought_signature_validator'));
  const a=account('a');store.putAccount(a);mode='403';r=await call(raw);assert.equal(r.status,200);await r.text();assert(!store.accounts().find(a=>a.id==='a')!.blocked);assert(pool.eligible(store.accounts().find(a=>a.id==='a')!,'claude-x'));
  mode='server-error';r=await call(raw);assert.equal(r.status,500);assert.equal(r.headers.get('x-account-secret'),null);assert.equal(r.headers.get('x-agyp-upstream-model'),null);assert(!(await r.text()).includes('must-not-leak'));
  mode='forbid';r=await call(raw);assert.equal(r.status,403);assert(!(await r.text()).includes('must-not-leak'));
  }finally{await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+test('capped text and media stream to completion with concurrent actual overshoot and no estimated charges',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-actual-')),store=new Store(dir);let calls=0,mode='stream';
+ let release!:()=>void;const gate=new Promise<void>(r=>release=r);
+ const upstream=createServer(async(req,res)=>{
+  for await(const _ of req){}calls++;
+  if(mode==='stream'){
+   await gate;res.setHeader('content-type','text/event-stream');
+   const event='data: '+JSON.stringify({response:{text:'untruncated',usageMetadata:{promptTokenCount:4,candidatesTokenCount:6,cachedContentTokenCount:2,totalTokenCount:10}}})+'\n\n';
+   res.write(event);res.write(event);res.end('data: [DONE]\n\n');
+  }else{res.setHeader('content-type','application/json');res.end('{"text":"missing metadata"}');}
+ });
+ const config={origin:'',upstream:await listen(upstream),clientId:'',clientSecret:'',secure:false};
+ const {app}=createApp(store,config),server=createServer(app);config.origin=await listen(server);store.putAccount(account('a'));
+ const {key}=store.createKey({name:'tiny-media',allowance:1,inputCap:1,outputCap:1}),session=store.session(key);
+ const call=(request:any,token=session.token)=>fetch(config.origin+'/v1internal:streamGenerateContent',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({model:'gemini-flash',request})});
+ try{
+  const requests=[
+   {contents:[{parts:[{text:'text without explicit output limit'}]}]},
+   {contents:[{parts:[{inlineData:{mimeType:'image/png',data:'dGVzdA=='}},{fileData:{mimeType:'image/png',fileUri:'https://example.invalid/offline-only'}}]}],generationConfig:{maxOutputTokens:1000000,candidateCount:2,thinkingConfig:{thinkingBudget:1000000}}}
+  ];
+  const both=requests.map(b=>call(b));
+  await new Promise<void>((resolve,reject)=>{let n=0;function check(){if(calls===2)return resolve();if(++n>200)return reject(new Error('fake upstream did not receive both concurrent requests'));setTimeout(check,5);}check();});
+  assert.equal(store.used(key).total,0);release();
+  for(const r of await Promise.all(both)){assert.equal(r.status,200);const body=await r.text();assert(body.endsWith('data: [DONE]\n\n'));assert.equal(body.split('untruncated').length-1,2);}
+  assert.deepEqual({...store.used(key)},{input:8,output:12,total:20});
+  assert.equal((await call(requests[0])).status,429);assert.equal(calls,2);
+  const other=store.createKey({name:'missing',allowance:1}),otherSession=store.session(other.key);mode='missing';
+  let r=await call(requests[1],otherSession.token);assert.equal(r.status,200);await r.text();assert.equal(store.used(other.key).total,0);
+  r=await call(requests[0],otherSession.token);assert.equal(r.status,200);await r.text();assert.equal(store.used(other.key).total,0);
+ }finally{release();await close(server);await close(upstream);store.close();rmSync(dir,{recursive:true,force:true});}
 });
