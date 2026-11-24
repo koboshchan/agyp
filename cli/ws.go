@@ -371,9 +371,9 @@ func (t *wsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		for {
 			n, err := req.Body.Read(buf)
 			total += n
-			if total > 16*1024*1024 {
+			if total > maxRequestBodyBytes {
 				cancel()
-				return nil, errors.New("agyp request exceeds 16 MiB")
+				return nil, errors.New("agyp request exceeds 512 MiB")
 			}
 			if n > 0 {
 				if e = sendUpload(wsFrame{Type: "data", ID: p.id, Data: buf[:n]}); e != nil {

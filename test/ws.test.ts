@@ -1,3 +1,4 @@
+import {MAX_REQUEST_BODY_BYTES} from '../server/limits.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
@@ -60,7 +61,7 @@ test('transport bounds empty chunks, chunk count, frame size, request slots and 
  const f={type:'start',id:rid(1),method:'POST',path:'/v1internal:generateContent',headers:{},deadline:Date.now()+10000};
  try{
   let p=await make();p.send(f);let closed=once(p.ws,'close');p.send({type:'data',id:f.id,data:''});await closed;
-  p=await make();p.send(f);closed=once(p.ws,'close');for(let i=0;i<4097;i++)p.send({type:'data',id:f.id,data:'eA=='});await closed;
+  p=await make();p.send(f);closed=once(p.ws,'close');for(let i=0;i<MAX_REQUEST_BODY_BYTES/32768+1;i++)p.send({type:'data',id:f.id,data:'eA=='});await closed;
   p=await make();closed=once(p.ws,'close');p.ws.send('x'.repeat(65537));await closed;
   p=await make();closed=once(p.ws,'close');for(let i=0;i<9;i++)p.send({...f,id:rid(i+1)});await closed;
   p=await make();closed=once(p.ws,'close');p.send({...f,headers:{'x-bad':'a\r\nb'}});await closed;
@@ -190,7 +191,7 @@ test('local diagnostics sanitizer cannot retain arbitrary keys, values, URLs, qu
  const records=diagnostics.snapshot();assert.equal(records.length,32);assert(records.every(r=>r.method==='other'&&r.path==='other'));assert.doesNotMatch(JSON.stringify(records),/CANARY/);assert(Buffer.byteLength(JSON.stringify(records))<=32*8192);
  assert.equal(records[0].shape.unknownKeys,4);assert(records[0].shape.fields.some(f=>f.field==='request.generationConfig.thinkingConfig.thinkingBudget'&&f.type==='string'));
  records[0].shape.fields.push({field:'CANARY_MUTATION',type:'CANARY_TYPE'});assert.doesNotMatch(JSON.stringify(diagnostics.snapshot()),/CANARY/);
- assert.equal(admissionShape(Buffer.alloc(16*1024*1024+1)).truncated,true);
+ assert.equal(admissionShape(Buffer.alloc(MAX_REQUEST_BODY_BYTES+1)).truncated,true);
  assert.equal(diagnostics.record('POST','/v1internal:generateContent',raw,'CANARY_REASON' as any),undefined);
 });
 
@@ -342,4 +343,24 @@ test('retained global socket 128 and TCP peer 16 caps still reject excess; close
   await Promise.all(peers.map(p=>p.stop()));
   const fresh=new Peer(config.origin,{localAddress:'127.0.0.20'});peers.push(fresh);await fresh.auth(key.token);
  }finally{await Promise.all(peers.map(p=>p.stop()));await transport.close();await close(server);store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('20 MiB bodies reach admission over HTTP and WS without upstream work',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'agyp-large-body-')),store=new Store(dir);
+ const config={origin:'',upstream:'http://127.0.0.1:1',clientId:'',clientSecret:'',secure:false};
+ const {app,pool}=createApp(store,config),server=createServer(app),transport=attachWebSocket(server,store,pool);
+ config.origin=await listen(server);const key=store.createKey({name:'large-body'}),p=new Peer(config.origin);
+ // Valid JSON, deliberately missing model, so admission rejects before any network call.
+ const raw=Buffer.from('{"padding":"'+'x'.repeat(20*1024*1024)+'"}');
+ try{
+  assert.equal(MAX_REQUEST_BODY_BYTES,512*1024*1024);
+  const session=store.session(key.key);
+  const response=await fetch(config.origin+'/v1internal:generateContent',{method:'POST',headers:{authorization:'Bearer '+session.token,'content-type':'application/json'},body:raw});
+  assert.equal(response.status,400);assert.match(await response.text(),/Request rejected|Model is required/);
+  await p.auth(key.token);
+  const id=rid(1);p.send({type:'start',id,method:'POST',path:'/v1internal:generateContent',headers:{'content-type':'application/json'},deadline:Date.now()+30000});
+  for(let offset=0;offset<raw.length;offset+=32768)await new Promise<void>((resolve,reject)=>p.ws.send(JSON.stringify({type:'data',id,data:raw.subarray(offset,offset+32768).toString('base64')}),e=>e?reject(e):resolve()));
+  p.send({type:'end',id});const r=await result(p);assert.equal(r.status,400);assert.match(r.body,/Request rejected|Model is required/);
+  assert.equal(store.used(key.key).total,0);assert.equal((store.db.prepare('SELECT COUNT(*) n FROM reservations').get() as any).n,0);
+ }finally{await p.stop();await transport.close();await close(server);store.close();rmSync(dir,{recursive:true,force:true});}
 });

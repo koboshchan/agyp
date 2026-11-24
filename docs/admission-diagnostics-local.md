@@ -55,7 +55,7 @@ returned in the error response as a field and a fixed message suffix. No raw err
 Shape summaries contain only position-specific fixed schema names and primitive
 JSON types. Contents, parts, prompt text, declarations, headers and values are not
 walked or retained. Unknown names are counted, never recorded or hashed. There
-are no string lengths. Parsing is capped at 16 MiB, traversal at depth 3 / 32
+are no string lengths. Parsing is capped at 512 MiB, traversal at depth 3 / 32
 fields, output records at 8 KiB and retention at 32 records. Snapshots are copies.
 Known-key summaries may not identify a renamed unknown key; that is an intentional
 privacy limitation, not permission to log arbitrary names. Canary tests cover
@@ -90,7 +90,7 @@ validation relaxation, CLI installation or other container changes are in scope.
 No upstream request is created by activation or retrieval.
 
 Only the existing authenticated WSS dispatched-request admission catch collects.
-It sees the already-buffered request, maximum 16 MiB. It does not read the socket a
+It sees the already-buffered request, maximum 512 MiB. It does not read the socket a
 second time. An admitted pre-upstream 400 is classified by a typed enum reason;
 bounded eligibility JSON/schema failures have `invalid_bootstrap`. Records identify
 source as `proxy_admission` or `bootstrap_admission`. Frame/auth/protocol closes,

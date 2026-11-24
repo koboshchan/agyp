@@ -231,8 +231,8 @@ func (s *shim) forward(w http.ResponseWriter, r *http.Request, u *url.URL, a *au
 		}
 		os.Remove(body.Name())
 		defer body.Close()
-		n, copyErr := io.Copy(body, io.LimitReader(r.Body, 16*1024*1024+1))
-		if n > 16*1024*1024 {
+		n, copyErr := io.Copy(body, io.LimitReader(r.Body, maxRequestBodyBytes+1))
+		if n > maxRequestBodyBytes {
 			http.Error(w, "request body too large", 413)
 			return
 		}

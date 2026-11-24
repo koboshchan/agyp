@@ -1,3 +1,4 @@
+import {MAX_REQUEST_BODY_BYTES} from './limits.js';
 // Admission metadata only. Activation is explicit, time-limited and default off.
 // No request values, user IDs, headers or arbitrary field names are retained.
 import {randomUUID} from 'node:crypto';
@@ -25,7 +26,7 @@ function kind(v:unknown):string{return v===null?'null':Array.isArray(v)?'array':
 export function admissionShape(raw:Buffer){
  const fields:{field:string;type:string}[]=[];let unknownKeys=0,truncated=false,rootType='invalid_json';
  // Bounded parse and bounded traversal independently. No string/array lengths.
- if(raw.length>16*1024*1024)return {rootType:'omitted',fields,unknownKeys,truncated:true};
+ if(raw.length>MAX_REQUEST_BODY_BYTES)return {rootType:'omitted',fields,unknownKeys,truncated:true};
  let body:unknown;try{body=JSON.parse(raw.toString());}catch{return {rootType,fields,unknownKeys,truncated};}
  rootType=kind(body);
  function visit(value:unknown,path:string,depth:number){

@@ -70,6 +70,8 @@ Change the example origin in `.env`; it is not a shared service configuration. C
 
 Route HTTPS traffic to `agyp:54873`. The reverse proxy must preserve streaming and forward WebSocket upgrades on `/transport`. Use an idle timeout longer than 45 seconds; the transport sends heartbeats every 15 seconds.
 
+Request bodies are limited to 512 MiB over HTTP and WebSocket, with 1 GiB of aggregate in-flight bodies per connection and server-wide. Configure the reverse proxy to accept at least 520 MiB (for nginx, `client_max_body_size 520m;`). Smaller authentication, bootstrap, and metadata limits still apply.
+
 The server prints a new admin token at every startup. Use it to sign into the dashboard, add Google pool accounts, and create ordinary user keys for clients.
 
 > [!WARNING]

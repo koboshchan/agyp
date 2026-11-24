@@ -1,3 +1,4 @@
+import {MAX_REQUEST_BODY_BYTES} from './limits.js';
 import express,{type Request,type Response,type NextFunction} from 'express';
 import helmet from 'helmet';
 import {rateLimit} from 'express-rate-limit';
@@ -85,7 +86,7 @@ export function createApp(store:Store,config:Config){
   if(url.origin!==new URL(config.oauthRedirect??config.origin).origin)throw Object.assign(new Error('Unexpected OAuth callback origin'),{status:400});
   const id=await finishOAuth(z.string().parse(url.searchParams.get('code')),z.string().parse(url.searchParams.get('state')),digest(res.locals.sessionToken));res.json({ok:true,id});
  });
- app.use((req,res,next)=>{if(!/^\/v1(?:internal|beta)?(?=[:/]|$)/.test(req.path)){res.status(404).json({error:{message:'Not found'}});return;}next();},sameOrigin,auth,express.raw({type:()=>true,limit:'16mb'}),async(req,res)=>{
+ app.use((req,res,next)=>{if(!/^\/v1(?:internal|beta)?(?=[:/]|$)/.test(req.path)){res.status(404).json({error:{message:'Not found'}});return;}next();},sameOrigin,auth,express.raw({type:()=>true,limit:MAX_REQUEST_BODY_BYTES}),async(req,res)=>{
   // app.use trims the prefix; originalUrl retains the exact upstream path.
   const saved=req.url;req.url=req.originalUrl;
   try{if(boundedKey(res.locals.key)&&allowedBootstrap(req.method,req.originalUrl))await bootstrap(req,res,res.locals.key);else await proxy(req,res,res.locals.key,store,pool);}finally{req.url=saved;}

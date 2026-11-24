@@ -1,3 +1,4 @@
+import {MAX_REQUEST_BODY_BYTES} from './limits.js';
 // A multiplexed transport adapter only. Admission, routing and billing stay in proxy().
 import {WebSocketServer,WebSocket} from 'ws';
 import type {Server} from 'node:http';
@@ -12,7 +13,10 @@ import {createBootstrap,allowedBootstrap} from './bootstrap.js';
 import {LimitedModelError} from './model-policy.js';
 import {AdmissionError,LocalAdmissionDiagnostics} from './diagnostics.js';
 
-const MAX_BODY=16*1024*1024,MAX_BUFFER=1024*1024;
+const MAX_BUFFER=1024*1024;
+const MAX_BUFFERED_BODY_BYTES=2*MAX_REQUEST_BODY_BYTES;
+// Standard 32KiB chunks must accommodate the entire body.
+const MAX_BODY_PARTS=MAX_REQUEST_BODY_BYTES/32768;
 const id=z.string().regex(/^[a-f0-9]{32}$/);
 const headers=z.record(z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/),z.string().max(8192).refine(v=>!/[\r\n\x00]/.test(v))).refine(h=>Object.keys(h).length<=64&&JSON.stringify(h).length<=32768);
 const frames=z.discriminatedUnion('type',[
@@ -104,7 +108,7 @@ export function attachWebSocket(server:Server,store:Store,pool:Pool,bootstrap=cr
     if(!p||p.res)throw new Error('Unknown or dispatched request');
     if(f.type==='data'){
      const b=Buffer.from(f.data,'base64');
-     if(!b.length||p.parts.length>=4096||p.bytes+b.length>MAX_BODY||used+b.length>32*1024*1024||buffered+b.length>64*1024*1024)throw new Error('Request body limit');
+     if(!b.length||p.parts.length>=MAX_BODY_PARTS||p.bytes+b.length>MAX_REQUEST_BODY_BYTES||used+b.length>MAX_BUFFERED_BODY_BYTES||buffered+b.length>MAX_BUFFERED_BODY_BYTES)throw new Error('Request body limit');
      p.parts.push(b);p.bytes+=b.length;used+=b.length;buffered+=b.length;return;
     }
     const res=new SocketResponse(send,f.id);p.res=res;active++;
